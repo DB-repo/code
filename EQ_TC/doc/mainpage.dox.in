@@ -1,0 +1,309 @@
+/**
+@mainpage
+Apache MADlib is an open-source library for scalable
+in-database analytics. It provides data-parallel implementations of
+mathematical, statistical, graph and machine learning methods for structured
+and unstructured data.
+
+Useful links:
+<ul>
+<li><a href="http://madlib.apache.org">MADlib web site</a></li>
+<li><a href="https://cwiki.apache.org/confluence/display/MADLIB">MADlib wiki</a></li>
+<li><a href="https://issues.apache.org/jira/browse/MADLIB/">JIRAs for reporting bugs and reviewing backlog</a></li>
+<li><a href="https://mail-archives.apache.org/mod_mbox/madlib-user/">User mailing list</a></li>
+<li><a href="https://mail-archives.apache.org/mod_mbox/madlib-dev/">Dev mailing list</a></li>
+<li>User documentation for earlier releases:
+    <a href="../v1.15.1/index.html">v1.15.1</a>,
+    <a href="../v1.15/index.html">v1.15</a>,
+    <a href="../v1.14/index.html">v1.14</a>,
+    <a href="../v1.13/index.html">v1.13</a>,
+    <a href="../v1.12/index.html">v1.12</a>
+</li>
+</ul>
+
+Please refer to the
+<a href="https://github.com/apache/madlib/blob/master/README.md">ReadMe</a>
+file for information about incorporated third-party material. License information
+regarding MADlib and included third-party libraries can be found in the
+<a href="https://github.com/apache/madlib/blob/master/LICENSE">
+License</a> directory.
+
+@defgroup grp_datatrans Data Types and Transformations
+@details Data types and operations that transform and shape data.
+    @defgroup grp_arraysmatrix Arrays and Matrices
+    @ingroup grp_datatrans
+    @brief Mathematical operations for arrays and matrices.
+    @details
+These modules provide basic mathematical operations to be run on array and matrices.
+
+For a distributed system, a matrix cannot simply be represented as a 2D array of numbers in memory.
+<b>We provide two forms of distributed representation of a matrix</b>:
+
+- Dense: The matrix is represented as a distributed collection of 1-D arrays.
+        An example 3x10 matrix would be the below table:
+<pre>
+ row_id |         row_vec
+--------+-------------------------
+   1    | {9,6,5,8,5,6,6,3,10,8}
+   2    | {8,2,2,6,6,10,2,1,9,9}
+   3    | {3,9,9,9,8,6,3,9,5,6}
+</pre>
+- Sparse: The matrix is represented using the row and column indices for each
+non-zero entry of the matrix. Example:
+<pre>
+ row_id | col_id | value
+--------+--------+-------
+      1 |      1 |     9
+      1 |      5 |     6
+      1 |      6 |     6
+      2 |      1 |     8
+      3 |      1 |     3
+      3 |      2 |     9
+      4 |      7 |     0
+(6 rows)
+</pre>
+&nbsp;
+All matrix operations work with either form of representation.
+
+In many cases, a matrix function can be <b>decomposed to vector operations
+applied independently on each row of a matrix (or corresponding rows of two
+matrices)</b>. We have also provided access to these internal vector operations
+(\ref grp_array) for greater flexibility. Matrix operations like
+<em>matrix_add</em> use the corresponding vector operation (<em>array_add</em>)
+and also include additional validation and formating. Other functions like
+<em>matrix_mult</em> are complex and use a combination of such vector operations
+and other SQL operations.
+
+<b>It's important to note</b> that these array functions are only available for the
+dense format representation of the matrix. In general, the scope of a single
+array function invocation is limited to only an array (1-dimensional or
+2-dimensional) that fits in memory. When such function is executed on a table of
+arrays, the function is called multiple times - once for each  array (or pair of
+arrays). On contrary, scope of a single matrix function invocation  is the
+complete matrix stored as a distributed table.
+    @{
+        @defgroup grp_array Array Operations
+        @defgroup grp_matrix Matrix Operations
+
+        @defgroup grp_matrix_factorization Matrix Factorization
+        @brief Linear algebra methods that factorize a matrix into a product of matrices.
+        @details Linear algebra methods that factorize a matrix into a product of matrices.
+        @{
+            @defgroup grp_lmf Low-Rank Matrix Factorization
+            @defgroup grp_svd Singular Value Decomposition
+        @}
+
+        @defgroup grp_linalg Norms and Distance Functions
+        @defgroup grp_svec Sparse Vectors
+    @}
+
+        @defgroup grp_encode_categorical Encoding Categorical Variables
+        @ingroup grp_datatrans
+
+        @defgroup grp_path Path
+        @ingroup grp_datatrans
+
+        @defgroup grp_pivot Pivot
+        @ingroup grp_datatrans
+
+        @defgroup grp_sessionize Sessionize
+        @ingroup grp_datatrans
+
+        @defgroup grp_stemmer Stemming
+        @ingroup grp_datatrans
+
+@defgroup grp_graph Graph
+@brief Graph algorithms and measures associated with graphs.
+@details Graph algorithms and measures associated with graphs.
+@{
+    @defgroup grp_apsp All Pairs Shortest Path
+    @defgroup grp_bfs Breadth-First Search
+    @defgroup grp_hits HITS
+
+    @defgroup grp_graph_measures Measures
+    @brief A collection of metrics computed on a graph.
+    @details A collection of metrics computed on a graph.
+    @{
+        @defgroup grp_graph_avg_path_length Average Path Length
+        @defgroup grp_graph_closeness Closeness
+        @defgroup grp_graph_diameter Graph Diameter
+        @defgroup grp_graph_vertex_degrees In-Out Degree
+    @}
+
+    @defgroup grp_pagerank PageRank
+    @defgroup grp_sssp Single Source Shortest Path
+    @defgroup grp_wcc Weakly Connected Components
+@}
+
+@defgroup grp_mdl Model Selection
+@brief Functions for model selection and model evaluation.
+@details Functions for model selection and model evaluation.
+@{
+    @defgroup grp_validation Cross Validation
+    @ingroup grp_mdl
+    @defgroup grp_pred Prediction Metrics
+    @ingroup grp_mdl
+    @defgroup grp_train_test_split Train-Test Split
+    @ingroup grp_mdl
+@}
+
+@defgroup grp_sampling Sampling
+@brief A collection of methods for sampling from a population.
+@details A collection of methods for sampling from a population.
+@{
+    @defgroup grp_balance_sampling Balanced Sampling
+    @defgroup grp_strs Stratified Sampling
+@}
+
+@defgroup grp_stats Statistics
+@brief A collection of probability and statistics modules.
+@details A collection of probability and statistics modules.
+@{
+    @defgroup grp_desc_stats Descriptive Statistics
+    @brief Methods to compute descriptive statistics of a dataset.
+    @details Methods to compute descriptive statistics of a dataset.
+    @{
+        @defgroup grp_sketches Cardinality Estimators
+        @brief Methods to estimate the number of unique values contained in data.
+        @{
+            @defgroup grp_countmin CountMin (Cormode-Muthukrishnan)
+            @defgroup grp_fmsketch FM (Flajolet-Martin)
+            @defgroup grp_mfvsketch MFV (Most Frequent Values)
+        @}
+
+        @defgroup grp_correlation Covariance and Correlation
+        @defgroup grp_summary Summary
+    @}
+
+    @defgroup grp_inf_stats Inferential Statistics
+    @brief Methods to compute inferential statistics of a dataset.
+    @details Methods to compute inferential statistics of a dataset.
+    @{
+        @defgroup grp_stats_tests Hypothesis Tests
+    @}
+
+    @defgroup grp_prob Probability Functions
+@}
+
+@defgroup grp_super Supervised Learning
+@brief Methods to perform a variety of supervised learning tasks.
+@details Methods to perform a variety of supervised learning tasks.
+@{
+    @defgroup grp_crf Conditional Random Field
+    @defgroup grp_knn k-Nearest Neighbors
+    @defgroup grp_nn Neural Network
+    @defgroup grp_regml Regression Models
+    @brief A collection of methods for modeling conditional expectation of a response variable.
+    @details A collection of methods for modeling conditional expectation of a response variable.
+    @{
+        @defgroup grp_clustered_errors Clustered Variance
+        @defgroup grp_cox_prop_hazards Cox-Proportional Hazards Regression
+        @defgroup grp_elasticnet Elastic Net Regularization
+        @defgroup grp_glm Generalized Linear Models
+        @defgroup grp_linreg Linear Regression
+        @defgroup grp_logreg Logistic Regression
+        @defgroup grp_marginal Marginal Effects
+        @defgroup grp_multinom Multinomial Regression
+        @defgroup grp_ordinal Ordinal Regression
+        @defgroup grp_robust Robust Variance
+    @}
+
+    @defgroup grp_svm Support Vector Machines
+    @defgroup grp_tree Tree Methods
+    @brief A collection of recursive partitioning (tree) methods.
+    @details A collection of recursive partitioning (tree) methods.
+    @{
+        @defgroup grp_decision_tree Decision Tree
+        @defgroup grp_random_forest Random Forest
+    @}
+@}
+
+@defgroup grp_tsa Time Series Analysis
+@brief A collection of methods to analyze time series data.
+@details A collection of methods to analyze time series data.
+@{
+    @defgroup grp_arima ARIMA
+@}
+
+@defgroup grp_unsupervised Unsupervised Learning
+@brief A collection of methods for unsupervised learning tasks.
+@details A collection of methods for unsupervised learning tasks.
+@{
+    @defgroup grp_association_rules Association Rules
+    @brief Methods used to discover patterns in transactional datasets.
+    @details Methods used to discover patterns in transactional datasets.
+    @{
+        @defgroup grp_assoc_rules Apriori Algorithm
+    @}
+
+    @defgroup grp_clustering Clustering
+    @brief Methods for clustering data.
+    @details Methods for clustering data.
+    @{
+        @defgroup grp_kmeans k-Means Clustering
+    @}
+
+    @defgroup grp_pca Dimensionality Reduction
+    @brief Methods for reducing the number of variables in a dataset to obtain a set of principle variables.
+    @details Methods for reducing the number of variables in a dataset to obtain a set of principle variables.
+    @{
+        @defgroup grp_pca_train Principal Component Analysis
+        @defgroup grp_pca_project Principal Component Projection
+    @}
+
+    @defgroup grp_topic_modelling Topic Modelling
+    @brief A collection of methods to uncover abstract topics in a document corpus.
+    @details A collection of methods to uncover abstract topics in a document corpus.
+    @{
+        @defgroup grp_lda Latent Dirichlet Allocation
+    @}
+@}
+
+
+@defgroup grp_other_functions Utilities
+@details Useful utilities for data science workflows.
+@{
+    @defgroup grp_cols2vec Columns to Vector
+    @defgroup @grp_utilities Database Functions
+
+    @defgroup grp_linear_solver Linear Solvers
+    @brief Methods that implement solutions for systems of consistent linear equations.
+    @details Methods that implement solutions for systems of consistent linear equations.
+    @{
+        @defgroup grp_dense_linear_solver Dense Linear Systems
+        @defgroup grp_sparse_linear_solver Sparse Linear Systems
+    @}
+
+    @defgroup grp_minibatch_preprocessing Mini-Batch Preprocessor
+    @defgroup grp_pmml PMML Export
+    @defgroup grp_text_utilities Term Frequency
+    @defgroup grp_vec2cols Vector to Columns
+@}
+
+@defgroup grp_early_stage Early Stage Development
+@details Implementations which are in an early stage of development.
+Interface and implementation are subject to change.
+@{
+    @defgroup grp_cg Conjugate Gradient
+    @defgroup grp_dl Deep Learning
+    @brief A collection of modules for deep learning.
+    @details A collection of modules for deep learning.
+    @{
+        @defgroup grp_keras Keras
+        @defgroup grp_keras_model_arch Load Model
+        @defgroup grp_input_preprocessor_dl Preprocessor for Images
+    @}
+    @defgroup grp_bayes Naive Bayes Classification
+    @defgroup grp_sample Random Sampling
+@}
+
+@defgroup grp_deprecated Deprecated Modules
+Deprecated modules that will be removed in the
+next major version (2.0).  There are newer MADlib modules
+that have replaced these functions.
+@{
+    @defgroup grp_indicator Create Indicator Variables
+    @defgroup grp_mlogreg Multinomial Logistic Regression
+@}
+
+*/

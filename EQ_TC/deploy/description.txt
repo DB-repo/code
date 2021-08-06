@@ -1,0 +1,10 @@
+Apache MADlib analytics. It provides data-parallel implementations of mathematical,
+statistical and machine learning methods for structured and
+unstructured data.
+
+The MADlib mission: to foster widespread development of scalable
+analytic skills, by harnessing efforts from commercial practice,
+academic research, and open-source development.
+
+To more information, please see the MADlib wiki at
+https://cwiki.apache.org/confluence/display/MADLIB

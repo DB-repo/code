@@ -1,0 +1,609 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * @file progressive.sql_in
+ *
+
+-- -----------------------------------------------------------------------
+--  Progressive Computation For SuperMADLib
+-- -----------------------------------------------------------------------
+
+m4_include(`SQLCommon.m4')
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.select_function_rewriter(
+    query          TEXT
+    )
+RETURNS TEXT[][] AS $$
+PythonFunction(progressive, query, select_function_rewriter)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.groupby_rewriter(
+    query          TEXT
+    )
+RETURNS TEXT[] AS $$
+PythonFunction(progressive, aggregation, groupby_rewriter)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.all_functions_rewrite_query(
+    query          TEXT
+    )
+RETURNS TEXT AS $$
+PythonFunction(progressive, baselines, all_functions_rewrite_query)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.setup_db()
+RETURNS VOID AS $$
+PythonFunction(progressive, schema, setup_db)
+$$ LANGUAGE plpythonu;
+
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.create_type(
+    create_stmt          TEXT
+)
+RETURNS VOID AS $$
+PythonFunction(progressive, schema, create_type)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.assign_enrichment_functions(
+    tbl          TEXT,
+    attr_func     TEXT[][]
+)
+RETURNS VOID AS $$
+PythonFunction(progressive, schema, assign_enrichment_functions)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.assign_decisions(
+    tbl          TEXT,
+    decision_func     TEXT[][]
+)
+RETURNS VOID AS $$
+PythonFunction(progressive, schema, assign_decisions)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.enriched_insert(
+    insert_stmt          TEXT
+)
+RETURNS VOID AS $$
+PythonFunction(progressive, insert, enriched_insert)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.run_function(
+    fid          INTEGER,
+    oid          INTEGER
+)
+RETURNS INTEGER AS $$
+PythonFunction(progressive, functions, run_function)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.run_function_multi(
+    req_attr          TEXT,
+    attr_fids          TEXT,
+    oid          INTEGER,
+    label       INTEGER
+)
+RETURNS INTEGER AS $$
+PythonFunction(progressive, functions, run_function_multi)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.run_function_multi_select(
+    req_attr          TEXT,
+    attr_fids          TEXT,
+    oid          INTEGER
+)
+RETURNS INTEGER AS $$
+PythonFunction(progressive, functions, run_function_multi_select)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.run_all_functions(
+    tbl_name        TEXT,
+    req_attr          TEXT,
+    oid          INTEGER,
+    label       INTEGER
+)
+RETURNS INTEGER AS $$
+PythonFunction(progressive, baselines, run_all_functions)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.run_all_functions_select(
+    tbl_name        TEXT,
+    req_attr          TEXT,
+    oid          INTEGER
+)
+RETURNS INTEGER AS $$
+PythonFunction(progressive, baselines, run_all_functions_select)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.query_setup(
+    query          TEXT
+)
+RETURNS VOID AS $$
+PythonFunction(progressive, progressive, query_setup)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.groupby_query_setup(
+    query          TEXT
+)
+RETURNS TEXT AS $$
+PythonFunction(progressive, progressive, groupby_query_setup)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.epoch_handler(
+    query       TEXT,
+    Num_epoch          INTEGER,
+    delay          INTEGER
+)
+RETURNS INTEGER AS $$
+PythonFunction(progressive, progressive, epoch_handler)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.calculateNewProb(
+    initProb float,
+	deltaUncertainty float
+)
+RETURNS float
+AS $$
+DECLARE
+   initUncertainty   FLOAT;
+   updatedUncertainty FLOAT;
+   updatedProb FLOAT;
+BEGIN
+   -- initUncertainty = - initProb * LOG(cast(initProb as decimal),2) - (1 - initProb) * LOG((1 - cast(initProb as decimal)), 2);
+    -- updatedUncertainty = initUncertainty + deltaUncertainty;
+    -- updatedProb = updatedUncertainty / (LOG ( cast(1/ updatedUncertainty as decimal) , 2));
+    IF initProb >=0.5 THEN
+	updatedProb = initProb - deltaUncertainty;
+     ELSE
+	updatedProb = initProb + deltaUncertainty;
+     END IF;
+     IF updatedProb >=1 THEN
+	RETURN 1.0;
+     END IF;
+    IF updatedProb <=0 THEN
+           RETURN 0.0;
+    ELSE
+          RETURN updatedProb;
+     END IF;
+   END;
+$$
+LANGUAGE plpgsql;
+
+
+create or replace function MADLIB_SCHEMA.array_avg(_data anyarray)
+returns float
+as
+$$
+    select avg(a)
+    from unnest(_data) as a
+$$ language sql;
+
+
+
+DROP TYPE IF EXISTS temp_t_type;
+
+CREATE TYPE temp_t_type AS (
+    column1 int,
+    column2 int,
+    column3 float,
+    column4 TEXT,
+    column5 varchar(50),
+    column6 float
+);
+
+
+
+CREATE OR REPLACE PROCEDURE MADLIB_SCHEMA.progressive_exec_driver_udf(
+   query TEXT,
+   Num_epoch INTEGER,
+   delay INTEGER,
+   token TEXT
+)
+LANGUAGE plpgsql
+AS
+$BODY$
+DECLARE
+   counter INTEGER := 0 ;
+   value INTEGER;
+   featureArray float[];
+   functionID int;
+   txid bigint;
+   status INTEGER;
+BEGIN
+    SELECT txid_current() into txid;
+    INSERT INTO query_sequence VALUES (token, txid, 0);
+    perform MADLIB_SCHEMA.query_setup(query);
+    COMMIT;
+LOOP
+      PERFORM pg_sleep(1);
+      RAISE NOTICE 'Running EPOCH %', counter;
+      EXIT WHEN counter = num_epoch ;
+      counter := counter + 1 ;
+
+      EXECUTE 'SELECT status FROM query_sequence WHERE txid = $1' INTO status USING txid;
+      IF status != 0 THEN
+          EXIT;
+      END IF;
+
+      perform MADLIB_SCHEMA.epoch_handler(query, Num_epoch, delay);
+
+      COMMIT;
+
+END LOOP ;
+      EXECUTE 'UPDATE query_sequence SET status = 2 where txid = $1' USING txid;
+
+END;
+$BODY$;
+
+
+
+CREATE OR REPLACE PROCEDURE MADLIB_SCHEMA.progressive_groupby_exec_driver_udf(
+   query TEXT,
+   Num_epoch INTEGER,
+   delay INTEGER,
+   token TEXT
+)
+LANGUAGE plpgsql
+AS
+$BODY$
+DECLARE
+   counter INTEGER := 0 ;
+   value INTEGER;
+   featureArray float[];
+   functionID int;
+   txid bigint;
+   status INTEGER;
+BEGIN
+    EXECUTE 'SELECT txid FROM query_sequence WHERE token = $1' INTO status USING token;
+
+    IF status IS NULL THEN
+        SELECT txid_current() into txid;
+        INSERT INTO query_sequence VALUES (token, txid, 0);
+        SELECT MADLIB_SCHEMA.groupby_query_setup(query) INTO query;
+    ELSIF status = 1 THEN
+        SELECT txid_current() into txid;
+        EXECUTE 'UPDATE query_sequence SET txid=$1, status=0 WHERE token=$2' USING txid, token;
+        SELECT MADLIB_SCHEMA.groupby_query_setup(query) INTO query;
+    ELSE
+        RETURN;
+    END IF;
+
+    COMMIT;
+
+LOOP
+      PERFORM pg_sleep(1);
+      RAISE NOTICE 'Running EPOCH %', counter;
+      EXIT WHEN counter = num_epoch ;
+      counter := counter + 1 ;
+
+      EXECUTE 'SELECT status FROM query_sequence WHERE txid = $1' INTO status USING txid;
+      IF status != 0 THEN
+          EXIT;
+      END IF;
+
+      perform MADLIB_SCHEMA.epoch_handler(query, Num_epoch, delay);
+
+      COMMIT;
+END LOOP ;
+      EXECUTE 'UPDATE query_sequence SET status = 2 where txid = $1' USING txid;
+
+END;
+$BODY$;
+
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.calculateBenefit (
+   relName VARCHAR(50),
+   stateTable VARCHAR(50),
+   attribute VARCHAR(50),
+   attributeVal INTEGER,
+   viewTable TEXT
+)
+RETURNS SETOF temp_t_type
+AS $$
+BEGIN
+RETURN QUERY  EXECUTE 'SELECT
+    ST.ID, FT.fid,
+    ((madlib.calculateProbValue(ST.ID,'''||quote_ident(stateTable)||''', '''||quote_ident(attribute)||''','''||attributeVal||''' ) * madlib.calculateNewProb(madlib.calculateProbValue(ST.ID,'''||quote_ident(stateTable)||''', '''||quote_ident(attribute)||''','''||attributeVal||'''), DT.delta_uncertainty[1]))*100)::numeric/FT.cost::FLOAT as benefit,
+    '''||quote_ident(relName)||''' as relationName,
+    ST.attribute as AttributeName,
+    madlib.calculateProbValue(ST.ID,'''||quote_ident(stateTable)||''', '''||quote_ident(attribute)||''','''||attributeVal||''' )AS prob
+    FROM '|| quote_ident(stateTable) ||' as ST, progressive_decision as DT, progressive_functions as FT,
+    ('|| viewTable ||') as VT
+    WHERE
+  ST.state_bitmap = DT.state
+AND DT.attr_name = '''||quote_ident(attribute)||'''
+AND FT.attr_name = '''||quote_ident(attribute)||'''
+AND DT.tbl_name = '''||quote_ident(relName)||'''
+AND FT.tbl_name = '''||quote_ident(relName)||'''
+AND FT.fid = DT.next_func[1]
+AND VT.id = ST.id
+AND ST.attribute = '''||quote_ident(attribute)||'''
+' ;
+END;
+$$
+
+LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.calculateProbValue (
+   objectID INT,
+   stateTable character varying,
+   attribute VARCHAR(50),
+   attributeVal INT
+)
+RETURNS FLOAT AS $$
+PythonFunction(progressive, probability, calculateProbValue)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.calculateBenefitWithoutVal (
+   relName VARCHAR(50),
+   stateTable VARCHAR(50),
+   attribute VARCHAR(50),
+   viewTable TEXT
+)
+RETURNS SETOF temp_t_type
+AS $$
+BEGIN
+RETURN QUERY  EXECUTE 'SELECT ST.ID, FT.fid,
+    (madlib.calculateBenValFromDist(madlib.calculateDistProb(ST.ID,'''||quote_ident(stateTable)||''', '''||quote_ident(attribute)||'''), DT.delta_uncertainty[1])*100)/FT.cost::FLOAT as benefit,
+    '''||quote_ident(relName)||''' as relationName,
+    ST.attribute as AttributeName,
+    0.0::FLOAT as prob
+    FROM '|| quote_ident(stateTable) ||' as ST, progressive_decision as DT, progressive_functions as FT,
+    ('|| viewTable ||') as VT
+    WHERE
+  ST.state_bitmap = DT.state
+AND DT.attr_name = '''||quote_ident(attribute)||'''
+AND FT.attr_name = '''||quote_ident(attribute)||'''
+AND DT.tbl_name = '''||quote_ident(relName)||'''
+AND FT.tbl_name = '''||quote_ident(relName)||'''
+AND FT.fid = DT.next_func[1]
+AND VT.id = ST.id
+AND ST.attribute = '''||quote_ident(attribute)||'''';
+END;
+$$
+LANGUAGE plpgsql;
+
+
+
+ CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.calculateBenValFromDist(probArray float[], deltaUncertainty float)
+RETURNS FLOAT
+AS $$
+DECLARE
+   tag_val   INT;
+   uncertainty_val FLOAT := 0.0;
+   benefit_val FLOAT := 0.0;
+   arr_len int;
+   x float;
+BEGIN
+	arr_len = array_length(probArray,1);
+	-- raise notice  'arr_len: % ', arr_len;
+
+	FOREACH x IN ARRAY probArray
+LOOP
+	-- raise notice  'prob_val: % ', x;
+	 IF x > 0 THEN
+	 uncertainty_val := uncertainty_val + (-1.0)* x::numeric * LOG ( arr_len, x::numeric);
+	-- raise notice  'uncertainty_val: % ', uncertainty_val;
+
+ END IF;
+ END LOOP;
+
+
+           benefit_val := uncertainty_val::float * (uncertainty_val-deltaUncertainty);
+	-- raise notice 'benefit_val: % ', benefit_val;
+           return benefit_val;
+END;
+$$
+LANGUAGE plpgsql;
+
+
+-----------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.calculateDistProb (
+   objectID INT,
+   stateTable character varying,
+   attribute VARCHAR(50)
+)
+RETURNS FLOAT[] AS $$
+PythonFunction(progressive, probability, calculateDistProb)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.explain(
+    query          TEXT,
+    method          INTEGER
+)
+RETURNS TEXT AS $$
+PythonFunction(progressive, explain, get_query_plan)
+$$ LANGUAGE plpythonu;
+
+
+
+-- Functions for Progressive Baselines
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.nextFunctionBaseline2(
+    bitmap       INTEGER[],
+    tbl          TEXT,
+    attr         TEXT
+)
+RETURNS INTEGER AS $$
+PythonFunction(progressive, baselines, nextFunctionBaseline2)
+$$ LANGUAGE plpythonu;
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.nextFunctionBaseline3(
+    bitmap       INTEGER[],
+    tbl          TEXT,
+    attr         TEXT
+)
+RETURNS INTEGER AS $$
+PythonFunction(progressive, baselines, nextFunctionBaseline3)
+$$ LANGUAGE plpythonu;
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.calculateProbValueBaseline2(
+    bitmap       INTEGER[],
+    tbl          TEXT,
+    attr         TEXT
+)
+RETURNS INTEGER AS $$
+PythonFunction(progressive, baselines, calculateProbValueBaseline2)
+$$ LANGUAGE plpythonu;
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.calculateProbValueBaseline3(
+    bitmap       INTEGER[],
+    tbl          TEXT,
+    attr         TEXT
+)
+RETURNS INTEGER AS $$
+PythonFunction(progressive, baselines, calculateProbValueBaseline3)
+$$ LANGUAGE plpythonu;
+
+CREATE OR REPLACE FUNCTION
+MADLIB_SCHEMA.baseline_epoch_handler(
+    query       TEXT,
+    Num_epoch          INTEGER,
+    delay          INTEGER,
+    baseline        INTEGER
+)
+RETURNS INTEGER AS $$
+PythonFunction(progressive, baselines, baseline_epoch_handler)
+$$ LANGUAGE plpythonu;
+
+
+CREATE OR REPLACE PROCEDURE MADLIB_SCHEMA.progressive_baselines_exec_driver_udf(
+   query TEXT,
+   Num_epoch INTEGER,
+   delay INTEGER,
+   baseline INTEGER,
+   token TEXT
+)
+LANGUAGE plpgsql
+AS
+$BODY$
+DECLARE
+   counter INTEGER := 0 ;
+   value INTEGER;
+   featureArray float[];
+   functionID int;
+   txid bigint;
+   status INTEGER;
+BEGIN
+    SELECT txid_current() into txid;
+    INSERT INTO query_sequence VALUES (token, txid, 0);
+    perform MADLIB_SCHEMA.query_setup(query);
+    COMMIT;
+LOOP
+      PERFORM pg_sleep(1);
+      RAISE NOTICE 'Running EPOCH %', counter;
+      EXIT WHEN counter = num_epoch ;
+      counter := counter + 1 ;
+
+      EXECUTE 'SELECT status FROM query_sequence WHERE txid = $1' INTO status USING txid;
+      IF status != 0 THEN
+          EXIT;
+      END IF;
+
+      perform MADLIB_SCHEMA.baseline_epoch_handler(query, Num_epoch, delay, baseline);
+
+      COMMIT;
+
+END LOOP ;
+      EXECUTE 'UPDATE query_sequence SET status = 2 where txid = $1' USING txid;
+
+END;
+$BODY$;
+
+
+
+CREATE OR REPLACE PROCEDURE MADLIB_SCHEMA.progressive_baselines_groupby_exec_driver_udf(
+   query TEXT,
+   Num_epoch INTEGER,
+   delay INTEGER,
+   baseline INTEGER,
+   token TEXT
+)
+LANGUAGE plpgsql
+AS
+$BODY$
+DECLARE
+   counter INTEGER := 0 ;
+   value INTEGER;
+   featureArray float[];
+   functionID int;
+   txid  bigint;
+   status INTEGER;
+BEGIN
+
+    EXECUTE 'SELECT txid FROM query_sequence WHERE token = $1' INTO status USING token;
+
+    IF status IS NULL THEN
+        SELECT txid_current() into txid;
+        INSERT INTO query_sequence VALUES (token, txid, 0);
+        SELECT MADLIB_SCHEMA.groupby_query_setup(query) INTO query;
+    ELSIF status = 1 THEN
+        SELECT txid_current() into txid;
+        EXECUTE 'UPDATE query_sequence SET txid=$1, status=0 WHERE token=$2' USING txid, token;
+        SELECT MADLIB_SCHEMA.groupby_query_setup(query) INTO query;
+    ELSE
+        RETURN;
+    END IF;
+
+    COMMIT;
+LOOP
+      PERFORM pg_sleep(1);
+      RAISE NOTICE 'Running EPOCH %', counter;
+      EXIT WHEN counter = num_epoch ;
+      counter := counter + 1 ;
+
+      EXECUTE 'SELECT status FROM query_sequence WHERE txid = $1' INTO status USING txid;
+      IF status != 0 THEN
+          EXIT;
+      END IF;
+
+      perform MADLIB_SCHEMA.baseline_epoch_handler(query, Num_epoch, delay, baseline);
+
+      COMMIT;
+
+END LOOP ;
+      EXECUTE 'UPDATE query_sequence SET status = 2 where txid = $1' USING txid;
+
+END;
+$BODY$;
+

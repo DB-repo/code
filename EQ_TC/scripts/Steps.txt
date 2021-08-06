@@ -1,0 +1,122 @@
+
+---------------------------------------------------------
+
+select madlib.setup_db();
+
+--------------------------------------------------------
+
+select madlib.create_type('CREATE TABLE patients(
+    id integer precise,
+    second_attack integer imprecise:2,
+    treatment integer precise,
+    trait_anxiety integer precise'
+);
+
+
+select madlib.create_type('CREATE TABLE treatments(
+    id integer precise,
+    med_id integer precise,
+    test_id integer precise,
+    surgery integer imprecise:10,
+    treatment integer precise'
+);
+
+---------------------------------------------------------
+
+select madlib.assign_enrichment_functions(
+    'patients',
+    array[
+        array['second_attack', '3', 'patients_dt_model', '0.80', '0.7', ''],
+        array['second_attack', '1', 'patients_mlp_model', '0.90', '0.9', '']
+    ]
+);
+
+select madlib.assign_enrichment_functions(
+    'treatments',
+    array[
+        array['surgery', '3', 'treatments_dt_model', '0.70', '0.6', ''],
+        array['surgery', '1', 'treatments_mlp_model', '0.80', '0.9', '']
+    ]
+);
+
+-----------------------------------------------------------
+
+select madlib.assign_decisions(
+    'patients',
+    array[
+        array['second_attack', 'ARRAY[0, 0]', 'ARRAY[1]', 'ARRAY[1]', 'ARRAY[0.25]'],
+        array['second_attack', 'ARRAY[0, 1]', 'ARRAY[1]', 'ARRAY[1]', 'ARRAY[0.2]'],
+        array['second_attack', 'ARRAY[1, 0]', 'ARRAY[1]', 'ARRAY[2]', 'ARRAY[0.3]']
+    ]
+);
+
+select madlib.assign_decisions(
+    'treatments',
+    array[
+        array['surgery', 'ARRAY[0, 0]', 'ARRAY[1]', 'ARRAY[3]', 'ARRAY[0.25]'],
+        array['surgery', 'ARRAY[0, 1]', 'ARRAY[1]', 'ARRAY[3]', 'ARRAY[0.2]'],
+        array['surgery', 'ARRAY[1, 0]', 'ARRAY[1]', 'ARRAY[4]', 'ARRAY[0.3]']
+    ]
+);
+
+
+-----------------------------------------------------------------------------------------
+
+create view single_row_view as select 1;
+
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (1, 46, 15, NULL, 60)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (2, 225, 37, NULL, 93)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (3, 40, 86, NULL, 38)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (4, 717, 28, NULL, 93)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (5, 400, 58, NULL, 39)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (6, 46, 15, NULL, 60)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (7, 225, 37, NULL, 93)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (8, 40, 86, NULL, 38)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (9, 717, 28, NULL, 93)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (10, 400, 58, NULL, 39)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (11, 46, 15, NULL, 60)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (12, 225, 37, NULL, 93)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (13, 40, 86, NULL, 38)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (14, 717, 28, NULL, 93)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (15, 400, 58, NULL, 39)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (16, 46, 15, NULL, 60)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (17, 225, 37, NULL, 93)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (18, 40, 86, NULL, 38)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (19, 717, 28, NULL, 93)');
+select madlib.enriched_insert('INSERT INTO  treatments  ( id ,  med_id ,  test_id ,  surgery ,  treatment ) VALUES (20, 400, 58, NULL, 39)');
+
+
+
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (1,NULL,60,282)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (2,NULL,93,133)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (3,NULL,60,679)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (4,NULL,39,409)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (5,NULL,20,759)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (6,NULL,25,710)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (7,NULL,13,325)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (8,NULL,38,652)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (9,NULL,60,282)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (10,NULL,15,133)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (11,NULL,93,679)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (12,NULL,80,409)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (13,NULL,20,759)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (14,NULL,38,710)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (15,NULL,13,325)');
+select madlib.enriched_insert('INSERT INTO patients (id, second_attack, treatment, trait_anxiety) VALUES (16,NULL,93,652)');
+
+-------------------------------------------------------------------------------------------
+
+call madlib.progressive_exec_driver_udf('SELECT patients.id as pid, patients.second_attack as psa, patients.treatment as pt, patients.trait_anxiety as pta,
+ treatments.id as tid, treatments.med_id as tmed, treatments.test_id as ttid, treatments.surgery as tsurgery, treatments.treatment as tt @FROM patients, treatments @WHERE
+ patients.second_attack = 1 AND patients.treatment = treatments.treatment AND  treatments.surgery = 82', 4, 4);
+
+
+call madlib.progressive_groupby_exec_driver_udf('SELECT patients.id, sum(patients.second_attack), patients.treatment,
+ treatments.id, treatments.surgery, sum(treatments.treatment) @FROM patients, treatments @WHERE
+ patients.second_attack = 1 AND patients.treatment = treatments.treatment AND  treatments.surgery = 82
+ @GROUP BY patients.id, patients.treatment, treatments.id, treatments.surgery', 4, 4);
+
+
+call madlib.progressive_exec_driver_udf('SELECT patients.id as pid, patients.second_attack as psa, patients.treatment as pt, patients.trait_anxiety as pta
+ @FROM patients @WHERE patients.second_attack = 1', 4, 4);
+

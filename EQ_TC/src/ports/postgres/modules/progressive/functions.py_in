@@ -1,0 +1,512 @@
+"""
+@file functions.py_in
+
+@namespace progressive
+"""
+
+from state import update_state, insert_state
+from constants import *
+from location_prediction import location_wrapper
+from algorithm import generateCombinedProbability,generateCombinedProbabilityUPI
+
+import time
+import plpy
+import uuid
+import re
+import sys
+import numpy as np
+sys.path.insert(0, '/usr/local/tagdb/data/features/')
+
+#import clf_image_net
+#import clf_multipie
+import clf_tweet
+
+def run_function(schema_madlib, fid, oid, **kwargs):
+    ret = plpy.execute("""SELECT fc.name as fcname, f.tbl_name as tbl, f.model_tbl_name as model_tbl,
+                                f.bitmap_index as index, f.attr_name as attr, f.parameters as params
+                            FROM {fctbl} as fc, {ftbl} as f
+                            WHERE f.fid={fid} AND f.fcid=fc.id
+                        """.format(fctbl=FUNC_CLASS_TBL, ftbl=FUNC_TBL, fid=fid))
+    model_tbl = ret[0]['model_tbl']
+    tbl = ret[0]['tbl']
+    fcname = ret[0]['fcname']
+    index = int(ret[0]['index'])
+    attr = ret[0]['attr']
+    parameters = ret[0]['params']
+
+    result, proba = _response(fcname, tbl, model_tbl, oid, attr, parameters)
+    with plpy.subtransaction():
+        update_state(oid, tbl, attr, index, proba, result)
+    # plpy.notice(result)
+    return result
+
+
+def run_function_multi(schema_madlib, req_attr, attr_fids, oid, label, **kwargs):
+
+    attr_fid_split = attr_fids.split(",")
+    fid = None
+    for af in attr_fid_split:
+        attr, func = af.split(":")
+        if attr == req_attr:
+            fid = func
+            break
+
+    if fid is None:
+        return -1
+
+    ret = plpy.execute("""SELECT fc.name as fcname, f.tbl_name as tbl, f.model_tbl_name as model_tbl,
+                                f.bitmap_index as index, f.attr_name as attr, f.parameters as params
+                            FROM {fctbl} as fc, {ftbl} as f
+                            WHERE f.fid={fid} AND f.fcid=fc.id
+                        """.format(fctbl=FUNC_CLASS_TBL, ftbl=FUNC_TBL, fid=fid))
+    model_tbl = ret[0]['model_tbl']
+    tbl = ret[0]['tbl']
+    fcname = ret[0]['fcname']
+    index = int(ret[0]['index'])
+    attr = ret[0]['attr']
+    parameters = ret[0]['params']
+
+    ret = plpy.execute("""SELECT num_labels FROM {attr_tbl} WHERE tbl_name='{tbl}' AND attr_name='{attr}'
+                        """.format(attr_tbl=ATTR_TABLE, tbl=tbl, attr=attr))
+
+    epoch_threshold = plpy.execute("""SELECT threshold FROM {tbl} 
+                                        WHERE tbl_name='{tbl_name}' AND attr_name='{attr_name}'
+                                        """.format(tbl=THRESHOLD_TBL, tbl_name=tbl, attr_name=attr))[0]['threshold']
+
+    result, proba = _response(fcname, tbl, model_tbl, oid, attr, int(ret[0]['num_labels']), parameters)
+    max_prob_label = update_state(oid, tbl, attr, index, proba, epoch_threshold)
+
+    # Logging Performance
+    ep_exec = plpy.execute("select current_setting('epoch.executed')::int as ep_exec")[0]['ep_exec']
+    ep_succ = plpy.execute("select current_setting('epoch.success')::int as ep_succ")[0]['ep_succ']
+    plpy.execute("set epoch.executed = {}".format(ep_exec+1))
+
+    if max_prob_label == label:
+        # Logging Performance
+        plpy.execute("set epoch.success = {}".format(ep_succ + 1))
+        return label
+    return None
+
+
+def run_function_multi_select(schema_madlib, req_attr, attr_fids, oid, **kwargs):
+
+    attr_fid_split = attr_fids.split(",")
+    fid = None
+    for af in attr_fid_split:
+        attr, func = af.split(":")
+        if attr == req_attr:
+            fid = func
+            break
+
+    if fid is None:
+        return -1
+
+    ret = plpy.execute("""SELECT fc.name as fcname, f.tbl_name as tbl, f.model_tbl_name as model_tbl,
+                                f.bitmap_index as index, f.attr_name as attr, f.parameters as params
+                            FROM {fctbl} as fc, {ftbl} as f
+                            WHERE f.fid={fid} AND f.fcid=fc.id
+                        """.format(fctbl=FUNC_CLASS_TBL, ftbl=FUNC_TBL, fid=fid))
+    model_tbl = ret[0]['model_tbl']
+    tbl = ret[0]['tbl']
+    fcname = ret[0]['fcname']
+    index = int(ret[0]['index'])
+    attr = ret[0]['attr']
+    parameters = ret[0]['params']
+
+    ret = plpy.execute("""SELECT num_labels FROM {attr_tbl} WHERE tbl_name='{tbl}' AND attr_name='{attr}'
+                        """.format(attr_tbl=ATTR_TABLE, tbl=tbl, attr=attr))
+
+    epoch_threshold = plpy.execute("""SELECT threshold FROM {tbl} 
+                                        WHERE tbl_name='{tbl_name}' AND attr_name='{attr_name}'
+                                        """.format(tbl=THRESHOLD_TBL, tbl_name=tbl, attr_name=attr))[0]['threshold']
+
+    result, proba = _response(fcname, tbl, model_tbl, oid, attr, int(ret[0]['num_labels']), parameters)
+    max_prob_label = update_state(oid, tbl, attr, index, proba, epoch_threshold)
+
+    # Logging Performance
+    ep_exec = plpy.execute("select current_setting('epoch.executed')::int as ep_exec")[0]['ep_exec']
+    ep_succ = plpy.execute("select current_setting('epoch.success')::int as ep_succ")[0]['ep_succ']
+    plpy.execute("set epoch.executed = {}".format(ep_exec+1))
+
+    if max_prob_label is not None:
+        plpy.execute("set epoch.success = {}".format(ep_succ + 1))
+
+    return max_prob_label
+
+
+def run_function_in(fid, oid):
+    run_function(None, fid, oid)
+
+
+def run_function_in_insert(fid, oid, num_labels):
+    ret = plpy.execute("""SELECT fc.name as fcname, f.tbl_name as tbl, f.model_tbl_name as model_tbl, 
+                                f.bitmap_index as index, f.attr_name as attr, f.parameters as params 
+                            FROM {fctbl} as fc, {ftbl} as f
+                            WHERE f.fid={fid} AND f.fcid=fc.id
+                        """.format(fctbl=FUNC_CLASS_TBL, ftbl=FUNC_TBL, fid=fid))
+    model_tbl = ret[0]['model_tbl']
+    tbl = ret[0]['tbl']
+    fcname = ret[0]['fcname']
+    index = int(ret[0]['index'])
+    attr = ret[0]['attr']
+    parameters = ret[0]['params']
+
+    result, proba = _response(fcname, tbl, model_tbl, oid, attr, num_labels, parameters)
+    insert_state(oid, tbl, attr, index, proba)
+
+    return result, max(proba)
+
+
+def _response(fcname, tbl, model_tbl, oid, attr, num_labels, parameters):
+
+    #plpy.execute("""DROP VIEW IF EXISTS {name}
+    #                        """.format(name=VIEW))
+    #plpy.execute("""CREATE OR REPLACE TEMP VIEW {name} AS SELECT * FROM {tbl_name} WHERE id={id}
+    #                    """.format(name=VIEW, tbl_name=tbl, id=oid))
+    #plpy.execute("""DROP TABLE IF EXISTS {name}
+    #                        """.format(name=OUTPUT_RESPONSE))
+    #plpy.execute("""DROP TABLE IF EXISTS {name}
+    #                            """.format(name=OUTPUT_PROBA))
+
+    response = None
+    proba = None
+
+    if fcname == 'madlib.mlp_predict':
+
+        plpy.execute("""select madlib.mlp_predict('{model}', '{tbl_name}', 'id', '{output}', 'response')
+                            """.format(model=model_tbl, tbl_name=VIEW, output=OUTPUT_RESPONSE))
+        ret = plpy.execute("""SELECT estimated_{attr} FROM {output}
+                                    """.format(output=OUTPUT_RESPONSE, attr=attr))
+        response = ret[0]['estimated_'+attr]
+
+        plpy.execute("""SELECT madlib.mlp_predict('{model}', '{tbl_name}', 'id', '{output}', 'proba')
+                            """.format(model=model_tbl, tbl_name=VIEW, output=OUTPUT_PROBA))
+        ret = plpy.execute("""SELECT * FROM {output}
+                                    """.format(output=OUTPUT_PROBA, label=response))
+
+        proba = []
+        for i in range(num_labels):
+            try:
+                proba.append(ret[0]['prob_'+str(i)])
+            except KeyError:
+                proba.append(0)
+
+    elif fcname in ('madlib.tree_predict', 'madlib.forest_predict'):
+        plpy.execute("""select {fcname}('{model}', '{tbl_name}', '{output}', 'response')
+                                    """.format(fcname=fcname, model=model_tbl, tbl_name=VIEW, output=OUTPUT_RESPONSE))
+        ret = plpy.execute("""SELECT estimated_{attr} FROM {output}
+                                            """.format(output=OUTPUT_RESPONSE, attr=attr))
+        response = ret[0]['estimated_' + attr]
+
+        plpy.execute("""SELECT {fcname}('{model}', '{tbl_name}', '{output}', 'prob')
+                                    """.format(fcname=fcname, model=model_tbl, tbl_name=VIEW, output=OUTPUT_PROBA))
+        ret = plpy.execute("""SELECT * FROM {output}
+                                            """.format(output=OUTPUT_PROBA, label=response))
+
+        proba = []
+        for i in range(num_labels):
+            try:
+                proba.append(ret[0]['estimated_prob_' + str(i)])
+            except KeyError:
+                proba.append(0)
+
+    elif fcname in ('madlib.svm_predict',):
+        plpy.execute("""SELECT {fcname}('{model}', '{tbl_name}', '{output}', 'response')
+                        from 
+                                    """.format(fcname=fcname, model=model_tbl, tbl_name=VIEW, output=OUTPUT_RESPONSE))
+        ret = plpy.execute("""SELECT estimated_{attr} FROM {output}
+                                            """.format(output=OUTPUT_RESPONSE, attr=attr))
+        response = ret[0]['estimated_' + attr]
+
+        plpy.execute("""SELECT {fcname}('{model}', '{tbl_name}', '{output}', 'prob')
+                                    """.format(fcname=fcname, model=model_tbl, tbl_name=VIEW, output=OUTPUT_PROBA))
+        ret = plpy.execute("""SELECT * FROM {output}
+                                            """.format(output=OUTPUT_PROBA, label=response))
+
+        proba = []
+        for i in range(num_labels):
+            try:
+                proba.append(ret[0]['estimated_prob_' + str(i)])
+            except KeyError:
+                proba.append(0)
+
+    elif fcname in ('location_room', 'location_region'):
+
+        ret = plpy.execute("""SELECT mac, timestamp FROM {tbl_name} WHERE id={id}
+                                """.format(name=VIEW, tbl_name=tbl, id=oid))
+        mac = ret[0]['mac']
+        timestamp =  ret[0]['timestamp']
+        response, proba = location_wrapper(mac, timestamp, model_tbl, parameters)
+
+    elif fcname == 'imagenet_lda':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+        
+        features = ret[0]['feature']
+        proba = clf_image_net.execute_gnb([features])
+        response = 0
+   
+    elif fcname == 'imagenet_gnb':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_image_net.execute_gnb([features])
+        response = 0
+    
+    elif fcname == 'imagenet_knn':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_image_net.execute_knn([features[:5000]])
+        response = 0
+    
+    elif fcname == 'imagenet_mlp':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_image_net.execute_sgd([features])
+        response = 0
+
+    elif fcname == 'imagenet_all':
+        bitmap = [1,1,1,1]
+        prob2DArray =[]
+
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+        features = ret[0]['feature']
+        proba = clf_image_net.execute_gnb([features])
+        prob2DArray.append(proba)
+
+        proba = clf_image_net.execute_gnb([features])
+        prob2DArray.append(proba)
+
+        proba = clf_image_net.execute_knn([features[:5000]])
+        prob2DArray.append(proba)
+
+        proba = clf_image_net.execute_sgd([features])
+        prob2DArray.append(proba)
+
+        output = generateCombinedProbability(bitmap, prob2DArray)
+
+        proba = output
+        response = 0
+
+    elif fcname == 'gender_gnb':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_multipie.exec_gender_gnb([features[:10000]])
+        response = 0
+
+    elif fcname == 'gender_gt':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_multipie.exec_gender_dt([features[:10000]])
+        response = 0
+        
+    elif fcname == 'gender_et':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_multipie.exec_gender_et_new([features[:10000]])
+        response = 0
+
+    elif fcname == 'gender_rf':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_multipie.exec_gender_mlp([features[:10000]])
+        response = 0
+
+    elif fcname == 'gender_all':
+        bitmap = [1,1,1,1]
+        prob2DArray =[]
+
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+        features = ret[0]['feature']
+        proba = clf_multipie.exec_gender_gnb([features[:10000]])
+        prob2DArray.append(proba)
+
+        proba = clf_multipie.exec_gender_dt([features[:10000]])
+        prob2DArray.append(proba)
+
+        proba = clf_multipie.exec_gender_et_new([features[:10000]])
+        prob2DArray.append(proba)
+
+        proba = clf_multipie.exec_gender_mlp([features[:10000]])
+        prob2DArray.append(proba)
+
+        output = generateCombinedProbability(bitmap, prob2DArray)
+        proba = output
+        #plpy.notice(proba)
+        response = 0
+    ###
+    elif fcname == 'expression_dt':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_multipie.exec_expression_dt([features[:10000]])
+        response = 0
+
+    elif fcname == 'expression_gnb':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+  
+        features = ret[0]['feature']
+        proba = clf_multipie.exec_expression_gnb([features[:10000]])
+        response = 0
+
+    elif fcname == 'expression_mlp':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_multipie.exec_expression_mlp([features[:10000]])
+        response = 0
+
+    elif fcname == 'expression_sgd':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_multipie.exec_expression_sgd([features[:10000]])
+        response = 0
+
+    elif fcname == 'expression_all':
+        bitmap = [1,1,1,1]
+        prob2DArray =[]
+
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+        features = ret[0]['feature']
+        proba = clf_multipie.exec_expression_dt([features[:10000]])
+        prob2DArray.append(proba)
+
+        proba = clf_multipie.exec_expression_gnb([features[:10000]])
+        prob2DArray.append(proba)
+
+        proba = clf_multipie.exec_expression_mlp([features[:10000]])
+        prob2DArray.append(proba)
+
+        proba = clf_multipie.exec_expression_sgd([features[:10000]])
+        prob2DArray.append(proba)
+
+        output = generateCombinedProbability(bitmap, prob2DArray)
+        proba = output
+        #plpy.notice(proba)
+        response = 0
+
+    elif fcname == 'tweet_gnb':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_tweet.execute_gnb([features[:1000]])
+        response = 0
+
+    elif fcname == 'tweet_dt':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_tweet.execute_dt([features[:1000]])
+        response = 0
+
+    elif fcname == 'tweet_svm':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_tweet.execute_svm([features[:1000]])
+        response = 0
+
+    elif fcname == 'tweet_lda':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_tweet.execute_lda([features[:1000]])
+        response = 0
+
+    elif fcname == 'tweet_mlp':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_tweet.execute_mlp([features[:1000]])
+        response = 0
+
+    elif fcname == 'tweet_sentiment_all':
+        bitmap = [1,1,1,1]
+        prob2DArray =[]
+
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+        features = ret[0]['feature']
+        proba = clf_tweet.execute_dt([features[:1000]])
+        prob2DArray.append(proba)
+    
+        proba = clf_tweet.execute_gnb([features[:1000]])
+        prob2DArray.append(proba)
+
+        proba = clf_tweet.execute_lda([features[:1000]])
+        prob2DArray.append(proba)
+    
+        proba = clf_tweet.execute_mlp([features[:1000]])
+        prob2DArray.append(proba)
+
+        output = generateCombinedProbability(bitmap, prob2DArray)
+        proba = output
+        #plpy.notice(proba)
+        response = 0
+        
+
+    elif fcname == 'topic_dt':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_tweet.execute_topic_gnb([features[:1000]])
+        response = 0
+
+    elif fcname == 'topic_gnb':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_tweet.execute_topic_lda([features[:1000]])
+        response = 0
+
+    elif fcname == 'topic_svm':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_tweet.execute_topic_lr([features[:1000]])
+        response = 0
+
+    elif fcname == 'topic_mlp':
+        ret = plpy.execute("""SELECT feature FROM {tbl_name} WHERE id={id}
+                        """.format(tbl_name=tbl, id=oid))
+
+        features = ret[0]['feature']
+        proba = clf_tweet.execute_topic_gnb([features[:1000]])
+        response = 0
+
+    elif fcname.startswith("synthetic"):
+        response = 0
+        proba = [0]
+
+    response = np.argmax(proba)
+    #plpy.notice(proba)
+    return response, proba

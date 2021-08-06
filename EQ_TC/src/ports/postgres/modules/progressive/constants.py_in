@@ -1,0 +1,40 @@
+import plpy
+
+def get_txid():
+    return str(plpy.execute("select txid_current()")[0]['txid_current'])
+
+# DB Level System Tables
+ATTR_TABLE = "progressive_attrs"
+FUNC_TBL = "progressive_functions"
+FUNC_CLASS_TBL = "progressive_function_classes"
+DECISION_TBL = "progressive_decision"
+QUERY_SEQ = "query_sequence"
+
+# Query Level System Tables
+MAT_VIEW = 'query_result_' + get_txid()
+GROUP_VIEW = "group_query_result_"  + get_txid()
+PLAN_TBL = 'query_plan_' + get_txid()
+BENEFIT_TBL = 'query_benefit_' + get_txid()
+PERF_TBL = "query_perf_" + get_txid()
+STORAGE_TBL = "query_storage_" + get_txid()
+THRESHOLD_TBL="query_thresholds_"  + get_txid()
+QUERY_STATS = "query_stats_"  + get_txid()
+METRICS_TBL = "query_accuracy_"  + get_txid()
+
+# Temp Tables
+VIEW = 'single_row_view_'  + get_txid()
+OUTPUT_RESPONSE = 'output_response_tbl_'  + get_txid()
+OUTPUT_PROBA = 'output_proba_tbl_'  + get_txid()
+EPOCH_TBL = "query_epoch_"  + get_txid()
+
+
+# Suffixes (Special Keywords)
+TBL_SUFFIX = 'prog_'  + get_txid()
+STATE_SUFFIX = "state"
+PKEY_SUFFIX = "pkey_" + get_txid()
+IM_PREFIX = "imprecise"
+PRED_SEP = ' AND '
+THRESHOLD_VAR = 'session.threshold_'  + get_txid()
+GT_TBL_SUFFIX = "full"
+
+

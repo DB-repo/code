@@ -1,0 +1,229 @@
+"""
+@file algorithm.py_in
+
+@namespace progressive
+"""
+
+from constants import *
+
+import time
+import plpy
+import uuid
+import re
+import json
+
+def generateCombinedProbability(functionBitmap, probability2dArr):
+    """ Combines probability vectors from different function execution and generates a
+    combined probability vector E.g.
+
+    functionBitmap = [1,0,0,1,1,0]
+    probability2dArr = [
+        [0.6,0,0,0.7,0.9,0],
+  	    [0,0,0,0,0,0],
+        [0,0,0,0,0,0],
+    	[0.7,0,0,0.75,0.95,0],
+    	[0.6,0,0,0.7,0.8,0],
+    	[0,0,0,0,0,0]
+    ]
+    Output: [0.6,0,0,0.18,0.28,0]
+    """
+    output_arr = [0] * len(probability2dArr[0])
+    num_possible_tag = len(probability2dArr[0])
+    
+    #weights = [0,1,6,1]
+    if num_possible_tag == 2:
+        weights = [0, 1, 6, 1] # multipie
+    else:
+        weights = [0,1, 1 ,6]
+    #weights = [0, 4, 6, 8]
+    #weights =[0, 1, 1, 6] # tweet works.
+    #weights = [0,1,1,6]
+    #weights = [0,2,1,4]
+    for i in range(num_possible_tag):
+        sum_val = 0.0
+        count_val = 0
+        #for j in range(len(probability2dArr)):
+        for j in range(len(functionBitmap)):
+            if functionBitmap[j] == 1:
+                sum_val += weights[j]*probability2dArr[j][i]
+                count_val += weights[j]
+        if count_val > 0:
+            output_arr[i] = 1.0 * (sum_val / count_val)
+        else:
+            output_arr[i] = 0
+
+    return output_arr
+
+
+def generateCombinedProbabilityUPI(functionBitmap, probability2dArr, tbl, attr):
+    """ Combines probability vectors from different function execution and generates a
+    combined probability vector E.g.
+
+    functionBitmap = [1,0,0,1,1,0]
+    probability2dArr = [
+        [0.6,0,0,0.7,0.9,0],
+  	    [0,0,0,0,0,0],
+        [0,0,0,0,0,0],
+    	[0.7,0,0,0.75,0.95,0],
+    	[0.6,0,0,0.7,0.8,0],
+    	[0,0,0,0,0,0]
+    ]
+    Output: [0.6,0,0,0.18,0.28,0]
+    """
+    ret1 = plpy.execute("""SELECT num_labels FROM {attr_tbl} WHERE tbl_name='{tbl}' AND attr_name='{attr}'
+                                    """.format(attr_tbl=ATTR_TABLE, tbl=tbl, attr=attr))
+    num_possible_tag = ret1[0]['num_labels']
+    output_arr = [0] * num_possible_tag
+    probability2dArr = map(lambda x: json.loads(x), probability2dArr)
+    #weights = [1, 0, 0, 6]
+    weights = [1, 0, 1, 6] #prev.
+    #weights = [1,1,1,1]
+    for i in range(num_possible_tag):
+        sum_val = 0.0
+        count_val = 0
+        #for j in range(len(probability2dArr)):
+        for j in range(len(functionBitmap)):
+            if functionBitmap[j] == 1:
+                try:
+                    sum_val += weights[j]*probability2dArr[j][str(i)]
+                except:
+                    pass
+                count_val += weights[j]
+        if count_val > 0:
+            output_arr[i] = 1.0 * (sum_val / count_val)
+        else:
+            output_arr[i] = 0
+    return output_arr
+
+
+def calculate_threshold(state_tbl, attr_name, attr_val, precise_pred_str):
+    """ Calculates probability threshold (given a label for the attribute) above which
+    the F1 measure is non decreasing
+    """
+    if state_tbl.startswith('synthetic'):
+        return 0
+    
+    probThreshold = 0.0
+
+    # Filter out the objects for threshold calculation which are filtered due to precise attribute conditions
+    if not precise_pred_str:
+        ret = plpy.execute("""
+                        SELECT state_bitmap, output, output_upi FROM {table} a, {benefit_tbl} b
+                        WHERE b.oid=a.id AND b.attr_name=a.attribute AND a.attribute='{attr}' 
+                        """.format(table=state_tbl, attr=attr_name, benefit_tbl=BENEFIT_TBL))
+    else:
+        ret = plpy.execute("""
+                SELECT state_bitmap, output, output_upi FROM {table} 
+                {precise_pred} AND attribute='{attr}'
+                """.format(table=state_tbl, attr=attr_name, val = attr_val, precise_pred=precise_pred_str.replace(state_tbl.split('_', 1)[0], state_tbl)))
+
+    prob_array = []
+    
+    plpy.notice("""
+                SELECT state_bitmap, output, output_upi FROM {table} 
+                {precise_pred} AND attribute='{attr}'
+                """.format(table=state_tbl, attr=attr_name, val = attr_val, precise_pred=precise_pred_str))
+
+    for row in ret:
+        if row['output'] is None:
+            p_val = generateCombinedProbabilityUPI(row['state_bitmap'], row['output_upi'], state_tbl.split('_', 1)[0], attr_name)
+        else:
+            p_val = generateCombinedProbability(row['state_bitmap'], row['output'])
+        prob = p_val[attr_val]
+        prob_array.append(prob)
+
+    prob_array.sort(reverse=True)
+    length = len(prob_array)
+    totalSum = sum(prob_array[0:length])
+
+    if not prob_array or totalSum == 0:
+        return 0.0
+
+    prevF1 = 0
+    precision = 0
+    recall = 0
+    f1Value = 0
+
+    sumOfProbability = 0.0
+
+    i = 0
+    while i < length:
+        sizeOfAnswer = i
+        sumOfProbability += prob_array[i]
+        precision = float(sumOfProbability) / (i + 1)
+        recall = float(sumOfProbability) / totalSum
+        f1Value = 2 * precision * recall / (precision + recall)
+        if f1Value < prevF1:
+            break
+        else:
+            prevF1 = f1Value
+
+        i += 1
+
+    probThreshold = prob_array[i - 1]
+    plpy.execute("set session.threshold = {}".format(probThreshold))
+    return probThreshold
+
+
+def calculate_threshold_without_label(state_tbl, attr_name, precise_pred_str):
+    """ Calculates probability threshold (no label provided for the attribute) above which
+    the F1 measure is non decreasing
+    """
+
+    if state_tbl.startswith('synthetic'):
+        return 0
+
+    probThreshold = 0.0
+
+    if not precise_pred_str:
+        ret = plpy.execute("""
+                        SELECT state_bitmap, output, output_upi FROM {table} a, {benefit_tbl} b
+                        WHERE b.oid=a.id AND b.attr_name=a.attribute AND a.attribute='{attr}' 
+                        """.format(table=state_tbl, attr=attr_name, benefit_tbl=BENEFIT_TBL))
+    else:
+        ret = plpy.execute("""
+                SELECT state_bitmap, output, output_upi FROM {table}
+                {precise_pred} AND attribute='{attr}' 
+                """.format(table=state_tbl, attr=attr_name, precise_pred=precise_pred_str.replace(state_tbl.split('_', 1)[0], state_tbl)))
+
+    prob_array = []
+
+    for row in ret:
+        if row['output'] is None:
+            p_val = generateCombinedProbabilityUPI(row['state_bitmap'], row['output_upi'], state_tbl.split('_', 1)[0], attr_name)
+        else:
+            p_val = generateCombinedProbability(row['state_bitmap'], row['output'])
+        prob = max(p_val)
+        prob_array.append(prob)
+
+    prob_array.sort(reverse=True)
+    length = len(prob_array)
+    totalSum = sum(prob_array[0:length])
+
+    if not prob_array or totalSum == 0:
+        return 0.0
+
+    prevF1 = 0
+    precision = 0
+    recall = 0
+    f1Value = 0
+
+    sumOfProbability = 0.0
+
+    i = 0
+    while i < length:
+        sizeOfAnswer = i
+        sumOfProbability += prob_array[i]
+        precision = float(sumOfProbability) / (i + 1)
+        recall = float(sumOfProbability) / totalSum
+        f1Value = 2 * precision * recall / (precision + recall)
+        if f1Value < prevF1:
+            break
+        else:
+            prevF1 = f1Value
+
+        i += 1
+
+    probThreshold = prob_array[i - 1]
+    plpy.execute("set session.threshold = {}".format(probThreshold))
+    return probThreshold

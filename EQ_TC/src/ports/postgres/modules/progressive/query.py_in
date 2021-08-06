@@ -1,0 +1,602 @@
+"""
+@file query.py_in
+
+@namespace progressive
+"""
+
+from constants import *
+
+import time
+import plpy
+import uuid
+import re
+import sqlparse
+
+
+def select_function_rewriter_without_exec(query):
+    '''
+    In this function, we setup the query parameters of epoch_len, max_epoch and ans_semantics. Based on the arguments, we call the appropriate
+    python functions to evaluate the queries.
+    '''
+
+    # Checking if the query contains atleast one filter
+    if '@WHERE' in query:
+        select, from_, where = query.split('@')
+        predicates = where.split(' ', 1)[1].split(PRED_SEP)
+    else:
+        select, from_= query.split('@')
+        where = ''
+        predicates = []
+
+
+    tables = from_.split(' ', 1)[1].split(',')
+    tables = map(lambda x: x.strip(), tables)
+
+    static_tables = []
+    tbl_im_attrs = {}
+    tbl_sel_columns = {}
+    tbl_whr_columns = {}
+
+    for table in tables:
+        tbl_im_attrs[table] = imprecise_attributes(table)
+
+    for sel in select.strip().split(' ', 1)[1].split(','):
+        tbl = sel.split('.', 1)[0].strip()
+        try:
+            tbl_sel_columns[tbl].append(sel.split()[0].split('.')[1])
+        except KeyError:
+            tbl_sel_columns[tbl] = [sel.split()[0].split('.')[1]]
+
+    for pred in predicates:
+        lhs, op, rhs = pred.strip().split(' ', 2)
+        ltbl, lattr = lhs.split('.')
+        if '.' in rhs:
+            continue
+        try:
+            tbl_whr_columns[ltbl].append(lattr)
+        except KeyError:
+            tbl_whr_columns[ltbl] = [lattr]
+
+    for table in tables:
+        if not tbl_im_attrs[table]:
+            static_tables.append(table)
+            continue
+
+        flag = True
+        for attr in tbl_sel_columns[table]:
+            if attr in tbl_im_attrs[table]:
+                flag = False
+                break
+
+        if table in tbl_whr_columns:
+            for attr in tbl_whr_columns[table]:
+                if attr in tbl_im_attrs[table]:
+                    flag = False
+                    break
+
+        if flag:
+            static_tables.append(table)
+
+
+    tbl_pred = {}
+    join_pred = []
+
+    for pred in predicates:
+        lhs, op, rhs = pred.strip().split(' ', 2)
+        ltbl = lhs.split('.', 1)[0]
+        if '.' in rhs:
+            rtbl = rhs.split('.', 1)[0]
+            if ltbl not in static_tables:
+                pred = pred.replace(ltbl+'.', ltbl+'_'+TBL_SUFFIX+'.')
+            if rtbl not in static_tables:
+                pred = pred.replace(rtbl+'.', rtbl+'_'+TBL_SUFFIX+'.')
+            join_pred.append(pred)
+        elif ltbl in static_tables:
+            join_pred.append(pred)
+        else:
+            try:
+                tbl_pred[ltbl].append(pred)
+            except KeyError:
+                tbl_pred[ltbl] = [pred]
+
+    tbl_sel = {}
+    join_sel = []
+
+    for sel in select.strip().split(' ', 1)[1].split(','):
+        tbl = sel.split('.', 1)[0].strip()
+
+        if tbl not in static_tables:
+            join_sel.append(sel.replace(tbl+'.', tbl+'_'+TBL_SUFFIX+'.'))
+        else:
+            join_sel.append(sel)
+
+        attr = sel.split()[0].split('.')[1]
+        if attr in tbl_im_attrs[tbl] and (tbl not in tbl_whr_columns or attr not in tbl_whr_columns[tbl]):
+            sel_str = "madlib.run_function_multi_select('{}', p.attr_fid, {}.id) as {}".format(attr, tbl, attr)
+        else:
+            sel_str = sel.split()[0]
+        try:
+            tbl_sel[tbl].append(sel_str)
+        except KeyError:
+            tbl_sel[tbl] = [sel_str]
+
+    query_tbls = []
+
+    for tbl in tables:
+        if tbl in static_tables:
+            continue
+
+        try:
+            preds = tbl_pred[tbl]
+        except KeyError:
+            preds = None
+
+        if preds is None:
+            tbl_query = "SELECT {sel} FROM {tbls}".format(sel=','.join(tbl_sel[tbl]), tbls=tbl)
+        else:
+            tbl_pred_str = PRED_SEP.join(preds)
+            tbl_query = "SELECT {sel} FROM {tbls} WHERE {preds}".format(sel=','.join(tbl_sel[tbl]), tbls=tbl, preds=tbl_pred_str)
+
+        query_tbls.append([tbl+'_'+TBL_SUFFIX, tbl_query])
+    
+    return query_tbls
+
+
+def select_function_rewriter_extract(query):
+    '''
+    In this function, we setup the query parameters of epoch_len, max_epoch and ans_semantics. Based on the arguments, we call the appropriate
+    python functions to evaluate the queries.
+    '''
+
+    # Checking if the query contains atleast one filter
+    if '@WHERE' in query:
+        select, from_, where = query.split('@')
+        predicates = where.split(' ', 1)[1].split(PRED_SEP)
+    else:
+        select, from_= query.split('@')
+        where = ''
+        predicates = []
+
+
+    tables = from_.split(' ', 1)[1].split(',')
+    tables = map(lambda x: x.strip(), tables)
+
+    static_tables = []
+    tbl_im_attrs = {}
+    tbl_sel_columns = {}
+    tbl_whr_columns = {}
+
+    for table in tables:
+        tbl_im_attrs[table] = imprecise_attributes(table)
+
+    for sel in select.strip().split(' ', 1)[1].split(','):
+        tbl = sel.split('.', 1)[0].strip()
+        try:
+            tbl_sel_columns[tbl].append(sel.split()[0].split('.')[1])
+        except KeyError:
+            tbl_sel_columns[tbl] = [sel.split()[0].split('.')[1]]
+
+    for pred in predicates:
+        lhs, op, rhs = pred.strip().split(' ', 2)
+        ltbl, lattr = lhs.split('.')
+        if '.' in rhs:
+            continue
+        try:
+            tbl_whr_columns[ltbl].append(lattr)
+        except KeyError:
+            tbl_whr_columns[ltbl] = [lattr]
+
+    for table in tables:
+        if not tbl_im_attrs[table]:
+            static_tables.append(table)
+            continue
+
+        flag = True
+        for attr in tbl_sel_columns[table]:
+            if attr in tbl_im_attrs[table]:
+                flag = False
+                break
+
+        if table in tbl_whr_columns:
+            for attr in tbl_whr_columns[table]:
+                if attr in tbl_im_attrs[table]:
+                    flag = False
+                    break
+
+        if flag:
+            static_tables.append(table)
+
+
+    tbl_pred = {}
+    join_pred = []
+
+    for pred in predicates:
+        lhs, op, rhs = pred.strip().split(' ', 2)
+        ltbl = lhs.split('.', 1)[0]
+        if '.' in rhs:
+            rtbl = rhs.split('.', 1)[0]
+            if ltbl not in static_tables:
+                pred = pred.replace(ltbl+'.', ltbl+'_'+TBL_SUFFIX+'.')
+            if rtbl not in static_tables:
+                pred = pred.replace(rtbl+'.', rtbl+'_'+TBL_SUFFIX+'.')
+            join_pred.append(pred)
+        elif ltbl in static_tables:
+            join_pred.append(pred)
+        else:
+            try:
+                tbl_pred[ltbl].append(pred)
+            except KeyError:
+                tbl_pred[ltbl] = [pred]
+
+    tbl_sel = {}
+    join_sel = []
+
+    for sel in select.strip().split(' ', 1)[1].split(','):
+        tbl = sel.split('.', 1)[0].strip()
+
+        if tbl not in static_tables:
+            join_sel.append(sel.replace(tbl+'.', tbl+'_'+TBL_SUFFIX+'.'))
+        else:
+            join_sel.append(sel)
+
+        attr = sel.split()[0].split('.')[1]
+        sel_str = sel.split()[0]
+        try:
+            tbl_sel[tbl].append(sel_str)
+        except KeyError:
+            tbl_sel[tbl] = [sel_str]
+
+    query_tbls = []
+
+    for tbl in tables:
+        if tbl in static_tables:
+            continue
+
+        try:
+            preds = tbl_pred[tbl]
+        except KeyError:
+            preds = None
+
+        if preds is None:
+            tbl_query = "SELECT {sel} FROM {tbls}".format(sel=','.join(tbl_sel[tbl]), tbls=tbl)
+        else:
+            tbl_pred_str = PRED_SEP.join(preds)
+            tbl_query = "SELECT {sel} FROM {tbls} WHERE {preds}".format(sel=','.join(tbl_sel[tbl]), tbls=tbl, preds=tbl_pred_str)
+
+        query_tbls.append([tbl+'_'+TBL_SUFFIX, tbl_query])
+
+    return query_tbls
+
+
+def select_function_rewriter(schema_madlib, query, **kwargs):
+    '''
+    In this function, we setup the query parameters of epoch_len, max_epoch and ans_semantics. Based on the arguments, we call the appropriate
+    python functions to evaluate the queries.
+    '''
+    # Checking if the query contains atleast one filter
+    if '@WHERE' in query:
+        select, from_, where = query.split('@')
+        predicates = where.split(' ', 1)[1].split(PRED_SEP)
+    else:
+        select, from_= query.split('@')
+        where = ''
+        predicates = []
+
+    plpy.execute("""
+            CREATE TABLE IF NOT EXISTS {table}(tbl_name varchar(100), num_enrichments integer)
+            """.format(table=QUERY_STATS))
+
+    tables = from_.split(' ', 1)[1].split(',')
+    tables = map(lambda x: x.strip(), tables)
+
+    static_tables = []
+    view_tables = []
+    tbl_im_attrs = {}
+    tbl_sel_columns = {}
+    tbl_whr_columns = {}
+
+    for table in tables:
+        tbl_im_attrs[table] = imprecise_attributes(table)
+
+    for sel in select.strip().split(' ', 1)[1].split(','):
+        tbl = sel.split('.', 1)[0].strip()
+        try:
+            tbl_sel_columns[tbl].append(sel.split()[0].split('.')[1])
+        except KeyError:
+            tbl_sel_columns[tbl] = [sel.split()[0].split('.')[1]]
+
+    # plpy.notice(tbl_sel_columns)
+
+    for pred in predicates:
+        lhs, op, rhs = pred.strip().split(' ', 2)
+        ltbl, lattr = lhs.split('.')
+        if '.' in rhs:
+            continue
+        try:
+            tbl_whr_columns[ltbl].append(lattr)
+        except KeyError:
+            tbl_whr_columns[ltbl] = [lattr]
+
+
+    enrichments = {}
+    for table in tables:
+        count = 0
+        if table in tbl_whr_columns:
+            for attr in tbl_whr_columns[table]:
+                if attr in tbl_im_attrs[table]:
+                    count += 1
+        enrichments[table] = count
+
+
+    for table in tables:
+        if not tbl_im_attrs[table]:
+            static_tables.append(table)
+            view_tables.append(table)
+            continue
+
+        flag = True
+        for attr in tbl_sel_columns[table]:
+            if attr in tbl_im_attrs[table]:
+                flag = False
+                break
+
+        if table in tbl_whr_columns:
+            for attr in tbl_whr_columns[table]:
+                if attr in tbl_im_attrs[table]:
+                    flag = False
+                    break
+
+        if flag:
+            static_tables.append(table)
+            view_tables.append(table)
+        else:
+            view_tables.append(table+'_'+TBL_SUFFIX)
+
+    tbls_str = ','.join(view_tables)
+
+    tbl_pred = {}
+    join_pred = []
+
+    for pred in predicates:
+        lhs, op, rhs = pred.strip().split(' ', 2)
+        ltbl = lhs.split('.', 1)[0]
+        if '.' in rhs:
+            rtbl = rhs.split('.', 1)[0]
+            if ltbl not in static_tables:
+                pred = pred.replace(ltbl + '.', ltbl + '_' + TBL_SUFFIX + '.')
+            if rtbl not in static_tables:
+                pred = pred.replace(rtbl + '.', rtbl + '_' + TBL_SUFFIX + '.')
+            join_pred.append(pred)
+        elif ltbl in static_tables:
+            join_pred.append(pred)
+        else:
+            try:
+                tbl_pred[ltbl].append(pred)
+            except KeyError:
+                tbl_pred[ltbl] = [pred]
+
+    tbl_sel = {}
+    join_sel = []
+
+    for sel in select.strip().split(' ', 1)[1].split(','):
+        tbl = sel.split('.', 1)[0].strip()
+
+        if tbl not in static_tables:
+            join_sel.append(sel.replace(tbl + '.', tbl + '_' + TBL_SUFFIX + '.'))
+        else:
+            join_sel.append(sel)
+
+        attr = sel.split()[0].split('.')[1]
+        if attr in tbl_im_attrs[tbl] and (tbl not in tbl_whr_columns or attr not in tbl_whr_columns[tbl]):
+            enrichments[tbl] += 1
+            
+        sel_str = sel.split()[0]
+        try:
+            tbl_sel[tbl].append(sel_str)
+        except KeyError:
+            tbl_sel[tbl] = [sel_str]
+
+    join_sel_str = ','.join(join_sel)
+    join_pred_str = PRED_SEP.join(join_pred)
+    if join_pred_str:
+        view_query = "SELECT {sel} FROM {tbls} WHERE {preds}".format(sel=join_sel_str, tbls=tbls_str, preds=join_pred_str)
+    else:
+        view_query = "SELECT {sel} FROM {tbls}".format(sel=join_sel_str, tbls=tbls_str)
+
+    query_tbls = []
+
+    plpy.notice(static_tables)
+
+    for tbl in tables:
+
+        plpy.execute("""INSERT INTO {qtbl}(tbl_name, num_enrichments) VALUES('{tbl}', {count})
+                                """.format(qtbl=QUERY_STATS, tbl=tbl, count=enrichments[tbl]))
+
+        if tbl in static_tables:
+            continue
+
+        try:
+            preds = tbl_pred[tbl]
+        except KeyError:
+            preds = None
+
+        if preds is None:
+            tbl_query = "SELECT {sel} FROM {tbls}".format(sel=','.join(tbl_sel[tbl]), tbls=tbl)
+        else:
+            tbl_pred_str = PRED_SEP.join(preds)
+            tbl_query = "SELECT {sel} FROM {tbls} WHERE {preds}".format(sel=','.join(tbl_sel[tbl]), tbls=tbl,
+                                                                        preds=tbl_pred_str)
+
+        query_tbls.append([tbl + '_' + TBL_SUFFIX, tbl_query])
+
+
+        plpy.notice(
+            "Temporary Table Created {}\n\n{}\n".format(
+                tbl + '_' + TBL_SUFFIX,
+                sqlparse.format(tbl_query, reindent=True, keyword_case='upper'))
+        )
+
+        plpy.execute("""CREATE TABLE IF NOT EXISTS {prog_tbl} AS SELECT {sel} FROM {tbl} WITH NO DATA
+                                   """.format(prog_tbl=tbl + '_' + TBL_SUFFIX, tbl=tbl, sel=','.join(tbl_sel[tbl])))
+        try:
+            plpy.execute("""ALTER TABLE {tbl} ADD CONSTRAINT {constraint_name} PRIMARY KEY (id)"""
+                     .format(tbl=tbl + '_' + TBL_SUFFIX, constraint_name=tbl + '_' + PKEY_SUFFIX))
+        except:
+            pass
+
+    plpy.execute("""
+                   CREATE INCREMENTAL MATERIALIZED VIEW {view} AS {view_q}
+                   """.format(view=MAT_VIEW, view_q=view_query))
+
+    plpy.notice(
+        "Materialized View Created\n{}\n\n".format(
+            sqlparse.format("""\nCREATE INCREMENTAL MATERIALIZED VIEW {view} AS {view_q}\n
+                       """.format(view=MAT_VIEW, view_q=view_query), reindent=True, keyword_case='upper'))
+    )
+
+    return query_tbls
+
+
+def imprecise_attributes(tbl):
+    ret = plpy.execute("""
+                SELECT distinct a.attr_name as attr_name FROM {attr_tbl} a
+                WHERE a.tbl_name='{tbl_name}' AND a.attr_type='imprecise'
+                """.format(attr_tbl=ATTR_TABLE, tbl_name=tbl))
+
+    return [x['attr_name'] for x in ret]
+
+
+def precise_attributes(tbl):
+    ret = plpy.execute("""
+                SELECT distinct a.attr_name as attr_name FROM {attr_tbl} a
+                WHERE a.tbl_name='{tbl_name}' AND a.attr_type='precise'
+                """.format(attr_tbl=ATTR_TABLE, tbl_name=tbl))
+
+    return [x['attr_name'] for x in ret]
+
+
+def get_materialized_view_def(query):
+    '''
+    In this function, we setup the query parameters of epoch_len, max_epoch and ans_semantics. Based on the arguments, we call the appropriate
+    python functions to evaluate the queries.
+    '''
+    # Checking if the query contains atleast one filter
+    if '@WHERE' in query:
+        select, from_, where = query.split('@')
+        predicates = where.split(' ', 1)[1].split(PRED_SEP)
+    else:
+        select, from_ = query.split('@')
+        where = ''
+        predicates = []
+
+    tables = from_.split(' ', 1)[1].split(',')
+    tables = map(lambda x: x.strip(), tables)
+
+    static_tables = []
+    view_tables = []
+    tbl_im_attrs = {}
+    tbl_sel_columns = {}
+    tbl_whr_columns = {}
+
+    for table in tables:
+        tbl_im_attrs[table] = imprecise_attributes(table)
+
+    for sel in select.strip().split(' ', 1)[1].split(','):
+        tbl = sel.split('.', 1)[0].strip()
+        try:
+            tbl_sel_columns[tbl].append(sel.split()[0].split('.')[1])
+        except KeyError:
+            tbl_sel_columns[tbl] = [sel.split()[0].split('.')[1]]
+
+    # plpy.notice(tbl_sel_columns)
+
+    for pred in predicates:
+        lhs, op, rhs = pred.strip().split(' ', 2)
+        ltbl, lattr = lhs.split('.')
+        if '.' in rhs:
+            rtbl, rattr = rhs.split('.')
+            try:
+                tbl_whr_columns[rtbl].append(rattr)
+            except KeyError:
+                tbl_whr_columns[rtbl] = [rattr]
+
+        try:
+            tbl_whr_columns[ltbl].append(lattr)
+        except KeyError:
+            tbl_whr_columns[ltbl] = [lattr]
+
+    enrichments = {}
+    for table in tables:
+        count = 0
+        if table in tbl_whr_columns:
+            for attr in tbl_whr_columns[table]:
+                if attr in tbl_im_attrs[table]:
+                    count += 1
+        enrichments[table] = count
+
+    for table in tables:
+        if not tbl_im_attrs[table]:
+            static_tables.append(table)
+            view_tables.append(table)
+            continue
+
+        flag = True
+        for attr in tbl_sel_columns[table]:
+            if attr in tbl_im_attrs[table]:
+                flag = False
+                break
+
+        if table in tbl_whr_columns:
+            for attr in tbl_whr_columns[table]:
+                if attr in tbl_im_attrs[table]:
+                    flag = False
+                    break
+
+        if flag:
+            static_tables.append(table)
+            view_tables.append(table)
+        else:
+            view_tables.append(table + '_' + TBL_SUFFIX)
+
+    tbls_str = ','.join(view_tables)
+
+    tbl_pred = {}
+    join_pred = []
+
+    for pred in predicates:
+        lhs, op, rhs = pred.strip().split(' ', 2)
+        ltbl = lhs.split('.', 1)[0]
+        if '.' in rhs:
+            rtbl = rhs.split('.', 1)[0]
+            if ltbl not in static_tables:
+                pred = pred.replace(ltbl + '.', ltbl + '_' + TBL_SUFFIX + '.')
+            if rtbl not in static_tables:
+                pred = pred.replace(rtbl + '.', rtbl + '_' + TBL_SUFFIX + '.')
+            join_pred.append(pred)
+        elif ltbl in static_tables:
+            join_pred.append(pred)
+        else:
+            try:
+                tbl_pred[ltbl].append(pred)
+            except KeyError:
+                tbl_pred[ltbl] = [pred]
+
+    join_sel = []
+
+    for sel in select.strip().split(' ', 1)[1].split(','):
+        tbl = sel.split('.', 1)[0].strip()
+
+        if tbl not in static_tables:
+            join_sel.append(sel.replace(tbl + '.', tbl + '_' + TBL_SUFFIX + '.'))
+        else:
+            join_sel.append(sel)
+
+    join_sel_str = ','.join(join_sel)
+    join_pred_str = PRED_SEP.join(join_pred)
+    if join_pred_str:
+        view_query = "SELECT {sel} FROM {tbls} WHERE {preds}".format(sel=join_sel_str, tbls=tbls_str,
+                                                                     preds=join_pred_str)
+    else:
+        view_query = "SELECT {sel} FROM {tbls}".format(sel=join_sel_str, tbls=tbls_str)
+
+    return view_query

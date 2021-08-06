@@ -1,0 +1,27 @@
+"""
+@file location_prediction.py_in
+
+@namespace progressive
+"""
+
+import time
+import plpy
+import uuid
+import re
+import sqlparse
+import requests
+import json
+
+def location_wrapper(mac, timestamp, model, server):
+    payload = {
+        "mac": mac,
+        "timestamp": timestamp,
+        "complexity": model
+    }
+
+    response = requests.post('http://localhost:4567/location', data=json.dumps(payload))
+    result = response.json()
+    label = result['label']
+    prob_dist = result['prob_dist']
+
+    return label, prob_dist

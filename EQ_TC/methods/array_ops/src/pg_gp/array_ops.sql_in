@@ -1,0 +1,735 @@
+/* ----------------------------------------------------------------------- *//**
+ *
+ * @file array_ops.sql_in
+ *
+ * @brief implementation of array operations in SQL
+ * @date   April 2011
+ *
+ *
+ *//* ----------------------------------------------------------------------- */
+
+m4_include(`SQLCommon.m4')
+
+/**
+@addtogroup grp_array
+
+<div class="toc"><b>Contents</b>
+<ul>
+<li><a href="#notes">Implementation Notes</a></li>
+<li><a href="#list">List of Array Operations</a></li>
+<li><a href="#examples">Examples</a></li>
+<li><a href="#related">Related Topics</a></li>
+</ul>
+</div>
+
+@brief Provides fast array operations supporting other MADlib modules.
+
+This module provides a set of basic array operations implemented in C and SQL.
+It is a support module for several machine learning algorithms that
+require fast array operations.
+
+@anchor notes
+@par Implementation Notes
+
+All functions (except normalize() and array_filter()) described in this module
+work with 2-D arrays.
+
+These functions support several numeric types:
+    - SMALLINT
+    - INTEGER
+    - BIGINT
+    - REAL
+    - DOUBLE PRECISION (FLOAT8)
+    - NUMERIC (internally casted into FLOAT8, loss of precisions can happen)
+
+Additionally, array_unnest_2d_to_1d() supports other data types such as TEXT or VARCHAR.
+
+Several of the function require NO NULL VALUES, while others omit NULLs and return results. See details in description of individual functions.
+
+@anchor list
+@par Array Operations
+<table class="output">
+<tr><th>array_add()</th><td> Adds two arrays. It requires that all the values are NON-NULL. Return type is the same as the input type.</td></tr>
+
+<tr><th>sum()</th><td> Aggregate, sums vector element-wisely. It requires that all the values are NON-NULL. Return type is the same as the input type.</td></tr>
+
+<tr><th>array_sub()</th><td> Subtracts two arrays. It requires that all the values are NON-NULL. Return type is the same as the input type. </td></tr>
+
+<tr><th>array_mult()</th><td> Element-wise product of two arrays. It requires that all the values are NON-NULL. Return type is the same as the input type. </td></tr>
+
+<tr><th>array_div()</th><td> Element-wise division of two arrays. It requires that all the values are NON-NULL. Return type is the same as the input type.
+</td></tr>
+
+<tr><th>array_dot()</th><td> Dot-product of two arrays. It requires that all the values are NON-NULL. Return type is the same as the input type.
+</td></tr>
+
+<tr><th>array_contains()</th><td>Checks whether one array contains the other. This function returns TRUE if each non-zero element in the right array equals to the element with the same index in the left array.
+ </td></tr>
+
+<tr><th>array_max()</th><td> This function finds the maximum value in the array. NULLs are ignored. Return type is the same as the input type.
+</td></tr>
+
+<tr><th>array_max_index()</th><td> This function finds the maximum value and corresponding index in the array. NULLs are ignored. Return type is array in format [max, index], and its element type is the same as the input type.
+</td></tr>
+
+<tr><th>array_min()</th><td> This function finds the minimum value in the array. NULLs are ignored. Return type is the same as the input type.
+</td></tr>
+
+<tr><th>array_min_index()</th><td> This function finds the minimum value and corresponding index in the array. NULLs are ignored. Return type is array in format [min, index], and its element type is the same as the input type.
+</td></tr>
+
+<tr><th>array_sum()</th><td>This function finds the sum of the values in the array. NULLs are ignored. Return type is the same as the input type.
+ </td></tr>
+
+<tr><th>array_sum_big()</th><td>This function finds the sum of the values in the array. NULLs are ignored. Return type is always FLOAT8 regardless of input.
+ This function is meant to replace array_sum() in cases when a sum may overflow the element type.
+ </td></tr>
+
+<tr><th>array_abs_sum()</th><td>This function finds the sum of abs of the values in the array. NULLs are ignored. Return type is the same as the input type.
+ </td></tr>
+
+<tr><th>array_abs()</th><td> This function takes an array as the input and finds abs of each element in the array, returning the resulting array. It requires that all the values are NON-NULL.
+</td></tr>
+
+<tr><th>array_mean()</th><td> This function finds the mean of the values in the array. NULLs are ignored.
+</td></tr>
+
+<tr><th>array_stddev()</th><td>This function finds the standard deviation of the values in the array. NULLs are ignored.
+ </td></tr>
+
+<tr><th>array_of_float()</th><td>This function creates an array of set size (the argument value) of FLOAT8, initializing the values to 0.0.
+ </td></tr>
+
+<tr><th>array_of_bigint()</th><td> This function creates an array of set size (the argument value) of BIGINT, initializing the values to 0.
+</td></tr>
+
+<tr><th>array_fill()</th><td> This functions set every value in the array to some desired value (provided as the argument).
+ </td></tr>
+
+<tr><th>array_filter()</th><td> This function takes an array as the input and keep only elements that satisfy the operator on specified scalar. It requires that the array is 1-D and all the values are NON-NULL. Return type is the same as the input type. By default, this function removes all zeros.
+</td></tr>
+
+<tr><th>array_scalar_mult()</th><td> This function takes an array as the input and executes element-wise multiplication by the scalar provided as the second argument, returning the resulting array. It requires that all the values are NON-NULL. Return type is the same as the input type.
+</td></tr>
+
+<tr><th>array_scalar_add()</th><td> This function takes an array as the input and executes element-wise addition of the scalar provided as the second argument,
+ returning the resulting array. It requires that all the values are NON-NULL. Return type is the same as the input type.
+</td></tr>
+
+<tr><th>array_sqrt()</th><td> This function takes an array as the input and finds square root of each element in the array, returning the resulting array. It requires that all the values are NON-NULL.
+</td></tr>
+
+<tr><th>array_pow()</th><td> This function takes an array and a float8 as the input and finds power of each element in the array, returning the resulting array. It requires that all the values are NON-NULL.
+</td></tr>
+
+
+<tr><th>array_square()</th><td> This function takes an array as the input and finds square of each element in the array, returning the resulting array. It requires that all the values are NON-NULL.
+</td></tr>
+
+<tr><th>normalize()</th><td> This function normalizes an array as sum of squares to be 1. It requires that the array is 1-D and all the values are NON-NULL.
+</td></tr>
+
+<tr><th>array_unnest_2d_to_1d()</th><td> This function takes a 2-D array as the input and unnests it by one level. It returns a set of 1-D arrays that correspond to rows of
+ the input array as well as an ID column with values corresponding to row positions occupied by those 1-D arrays within the 2-D array.
+</td></tr>
+
+</table>
+
+@anchor examples
+@examp
+
+-# Create a database table with two integer array columns and add some data.
+<pre class="example">
+CREATE TABLE array_tbl ( id integer,
+                         array1 integer[],
+                         array2 integer[]
+                       );
+INSERT INTO array_tbl VALUES
+                       ( 1, '{1,2,3,4,5,6,7,8,9}', '{9,8,7,6,5,4,3,2,1}' ),
+                       ( 2, '{1,1,0,1,1,2,3,99,8}','{0,0,0,-5,4,1,1,7,6}' );
+</pre>
+-# Find the minimum, maximum, mean, and standard deviation of the `array1` column.
+<pre class="example">
+SELECT id, madlib.array_min(array1), madlib.array_max(array1),
+           madlib.array_min_index(array1), madlib.array_max_index(array1),
+           madlib.array_mean(array1), madlib.array_stddev(array1)
+FROM array_tbl;
+</pre>
+Result:
+<pre class="result">
+id | array_min | array_max | array_min_index | array_max_index |    array_mean    |   array_stddev
+----+-----------+-----------+---------------+---------------+------------------+------------------
+  1 |         1 |         9 | {1,1}         | {9,9}         |                5 | 2.73861278752583
+  2 |         0 |        99 | {0,3}         | {99,8}        | 12.8888888888889 | 32.3784050118457(2 rows)
+</pre>
+-# Perform array addition and subtraction.
+<pre class="example">
+SELECT id, madlib.array_add(array1,array2),
+          madlib.array_sub(array1,array2)
+FROM array_tbl;
+</pre>
+Result:
+<pre class="result">
+ id |          array_add           |        array_sub
+&nbsp;---+------------------------------+-------------------------
+  2 | {1,1,0,-4,5,3,4,106,14}      | {1,1,0,6,-3,1,2,92,2}
+  1 | {10,10,10,10,10,10,10,10,10} | {-8,-6,-4,-2,0,2,4,6,8}
+(2 rows)
+</pre>
+-# Perform element-wise array multiplication and division. The row with `id=2` is
+excluded because the divisor array contains zero, which would cause a divide-by-zero error.
+<pre class="example">
+SELECT id, madlib.array_mult(array1,array2),
+           madlib.array_div(array1,array2)
+FROM array_tbl
+WHERE 0 != ALL(array2);</pre>
+Result:
+<pre class="result">
+ id |         array_mult         |      array_div
+&nbsp;---+----------------------------+---------------------
+  1 | {9,16,21,24,25,24,21,16,9} | {0,0,0,0,1,1,2,4,9}
+(1 row)
+</pre>
+-# Calculate the dot product of the arrays.
+<pre class="example">
+SELECT id, madlib.array_dot(array1, array2)
+FROM array_tbl;
+</pre>
+Result:
+<pre class="result">
+ id | array_dot
+&nbsp;---+----------
+  2 |       745
+  1 |       165
+(2 rows)
+</pre>
+-# Multiply an array by a scalar 3.
+<pre class="example">
+SELECT id, madlib.array_scalar_mult(array1,3)
+FROM array_tbl;
+</pre>
+Result:
+<pre class="result">
+ id |     array_scalar_mult
+&nbsp;---+--------------------------
+  1 | {3,6,9,12,15,18,21,24,27}
+  2 | {3,3,0,3,3,6,9,297,24}
+(2 rows)
+</pre>
+-# Construct a nine-element array with each element set to the value 1.3.
+<pre class="example">
+SELECT madlib.array_fill(madlib.array_of_float(9), 1.3::float);
+</pre>
+Result:
+<pre class="result">
+              array_fill
+&nbsp;--------------------------------------
+ {1.3,1.3,1.3,1.3,1.3,1.3,1.3,1.3,1.3}
+(1 row)
+</pre>
+-# Unnest a column of 2-D arrays into sets of 1-D arrays.
+<pre class="example">
+SELECT id, (madlib.array_unnest_2d_to_1d(val)).*
+FROM (
+  SELECT 1::INT AS id, ARRAY[[1.3,2.0,3.2],[10.3,20.0,32.2]]::FLOAT8[][] AS val
+  UNION ALL
+  SELECT 2, ARRAY[[pi(),pi()/2],[2*pi(),pi()],[pi()/4,4*pi()]]::FLOAT8[][]
+) t
+ORDER BY 1,2;
+</pre>
+Result:
+<pre class="result">
+ id | unnest_row_id |            unnest_result
+----+---------------+--------------------------------------
+  1 |             1 | {1.3,2,3.2}
+  1 |             2 | {10.3,20,32.2}
+  2 |             1 | {3.14159265358979,1.5707963267949}
+  2 |             2 | {6.28318530717959,3.14159265358979}
+  2 |             3 | {0.785398163397448,12.5663706143592}
+(5 rows)
+</pre>
+If the function is called without the .* notation then it will return a
+composite record type with two attributes: the row ID and corresponding
+unnested array result.
+
+@anchor related
+@par Related Topics
+
+File array_ops.sql_in for list of functions and usage.
+*/
+
+/**
+ * @brief Adds two arrays. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @param y Array y
+ * @returns Sum of x and y.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_add(x anyarray, y anyarray) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_add'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief Aggregate, element-wise sum of arrays. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @returns Sum of x
+ *
+ */
+DROP AGGREGATE IF EXISTS MADLIB_SCHEMA.sum(/* x */ anyarray) CASCADE;
+CREATE AGGREGATE MADLIB_SCHEMA.sum(/* x */ anyarray) (
+    SFUNC     = MADLIB_SCHEMA.array_add,
+    STYPE     = anyarray
+   m4_ifdef( `__POSTGRESQL__', `', `, PREFUNC   = MADLIB_SCHEMA.array_add')
+);
+
+/**
+ * @brief Subtracts two arrays. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @param y Array y
+ * @returns x-y.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_sub(x anyarray, y anyarray) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_sub'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief Element-wise product of two arrays. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @param y Array y
+ * @returns Element-wise product of x and y.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_mult(x anyarray, y anyarray) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_mult'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief Element-wise division of two arrays. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @param y Array y
+ * @returns Element-wise division of x and y.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_div(x anyarray, y anyarray) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_div'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief Dot-product of two arrays. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @param y Array y
+ * @returns Dot-product of x and y.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_dot(x anyarray, y anyarray) RETURNS float8
+AS 'MODULE_PATHNAME', 'array_dot'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief Checks whether one array contains the other. This function returns TRUE if each non-zero element in the right array equals to the element with the same index in the left array.
+ *
+ * @param x Array x
+ * @param y Array y
+ * @returns Returns true if x contains y.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_contains(x anyarray, y anyarray) RETURNS BOOL
+AS 'MODULE_PATHNAME', 'array_contains'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function finds the maximum value in the array. NULLs are ignored. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @returns Max of x.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_max(x anyarray) RETURNS anyelement
+AS 'MODULE_PATHNAME', 'array_max'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function finds the maximum value and corresponding index in the array. NULLs are ignored. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @returns Array as [max, index].
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_max_index(x anyarray) RETURNS float8[]
+AS 'MODULE_PATHNAME', 'array_max_index'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function finds the minimum value in the array. NULLs are ignored. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @returns Min of x.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_min(x anyarray) RETURNS anyelement
+AS 'MODULE_PATHNAME', 'array_min'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function finds the minimum value and corresponding index in the array. NULLs are ignored. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @returns Array as [min, index].
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_min_index(x anyarray) RETURNS float8[]
+AS 'MODULE_PATHNAME', 'array_min_index'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function finds the sum of the values in the array. NULLs are ignored. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @returns Sum of x.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_sum(x anyarray) RETURNS anyelement
+AS 'MODULE_PATHNAME', 'array_sum'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function finds the sum of the values in the array. NULLs are ignored. Return type is always FLOAT8 regardless of input.
+ * This function is meant to replace array_sum() in the cases when sum may overflow the element type.
+ *
+ * @param x Array x
+ * @returns Sum of x.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_sum_big(x anyarray) RETURNS float8
+AS 'MODULE_PATHNAME', 'array_sum_big'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function finds the sum of abs of the values in the array. NULLs are ignored. Return type is the same as the input type.
+ *
+ * @param x Array x
+ * @returns Sum of absolute value of x
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_abs_sum(x anyarray) RETURNS anyelement
+AS 'MODULE_PATHNAME', 'array_abs_sum'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes an array as the input and finds absolute value of each element in the array, returning the resulting array. It requires that all the values are NON-NULL.
+ *
+ * @param x Array x
+ * @returns Absolute value of all elements of x.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_abs(x anyarray) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_abs'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function finds the mean of the values in the array. NULLs are ignored.
+ *
+ * @param x Array x
+ * @returns Mean of x.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_mean(x anyarray) RETURNS float8
+AS 'MODULE_PATHNAME', 'array_mean'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function finds the standard deviation of the values in the array. NULLs are ignored.
+ *
+ * @param x Array x
+ * @returns Standard deviation of x.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_stddev(x anyarray) RETURNS float8
+AS 'MODULE_PATHNAME', 'array_stddev'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function creates an array of set size (the argument value) of FLOAT8, initializing the values to 0.0;
+ *
+ * @param k Array size
+ * @returns Array of size k.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_of_float(k integer) RETURNS float8[]
+AS 'MODULE_PATHNAME', 'array_of_float'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function creates an array of set size (the argument value) of BIGINT, initializing the values to 0;
+ *
+ * @param k Array size.
+ * @returns Array of size k.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_of_bigint(k integer) RETURNS bigint[]
+AS 'MODULE_PATHNAME', 'array_of_bigint'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This functions set every values in the array to some desired value (provided as the argument).
+ *
+ * @param x Some array
+ * @param k Desired value
+ * @returns Fills array with desired value.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_fill(x anyarray, k anyelement) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_fill'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes an array as the input and apply cos function element-wise, returning the resulting array. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ * @param x Array x
+ * @returns Array with each element of cos(x).
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_cos(x anyarray) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_cos'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes an array as the input and executes element-wise multiplication by the scalar provided as the second argument, returning the resulting array. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ * @param x Array x
+ * @param k Scalar
+ * @returns Array with each element of x multiplied by scalar.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_scalar_mult(x anyarray, k anyelement) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_scalar_mult'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes an array as the input and executes element-wise addition by the scalar provided as the second argument, returning the resulting array. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ * @param x Array x
+ * @param k Scalar
+ * @returns Array with each element of x added by scalar.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_scalar_add(x anyarray, k anyelement) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_scalar_add'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+
+/**
+ * @brief This function takes an array as the input and keep only elements that satisfy the operator on specified scalar. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ * @param x Array x
+ * @param k Scalar
+ * @param op Operator
+ * @returns Filtered array.
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_filter(x anyarray, k anyelement, op text) RETURNS anyarray
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes an array as the input and removes elements that equal to specified scalar. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ * @param x Array x
+ * @param k Scalar
+ * @returns Filtered array.
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_filter(x anyarray, k anyelement) RETURNS anyarray
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes an array as the input and removes elements that equal to 0. It requires that all the values are NON-NULL. Return type is the same as the input type.
+ * @param x Array x
+ * @returns Filtered array.
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_filter(x anyarray) RETURNS anyarray
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes an array as the input and finds square root of each element in the array, returning the resulting array. It requires that all the values are NON-NULL.
+ *
+ * @param x Array x
+ * @returns Square root of all elements of x.
+ *
+ */
+DROP FUNCTION IF EXISTS MADLIB_SCHEMA.array_sqrt(x anyarray) CASCADE;
+CREATE FUNCTION MADLIB_SCHEMA.array_sqrt(x anyarray) RETURNS float8[]
+AS 'MODULE_PATHNAME', 'array_sqrt'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes an array and a float8 as the input and finds power of each element in the array, returning the resulting array. It requires that all the values are NON-NULL.
+ *
+ * @param x Array x
+ * @param y Desired power
+ * @returns Power of y for all elements of x.
+ *
+ */
+DROP FUNCTION IF EXISTS MADLIB_SCHEMA.array_pow(x anyarray, y anyelement) CASCADE;
+CREATE FUNCTION MADLIB_SCHEMA.array_pow(x anyarray, y anyelement) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_pow'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes an array as the input and finds square of each element in the array, returning the resulting array. It requires that all the values are NON-NULL.
+ *
+ * @param x Array x
+ * @returns Square of all elements of x.
+ *
+ */
+DROP FUNCTION IF EXISTS MADLIB_SCHEMA.array_square(x anyarray) CASCADE;
+CREATE FUNCTION MADLIB_SCHEMA.array_square(x anyarray) RETURNS float8[]
+AS 'MODULE_PATHNAME', 'array_square'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function normalizes an array as sum of squares to be 1.
+ *
+ * @param x Array x.
+ * @return  Array normalized by its 2-norm.
+ *
+ */
+DROP FUNCTION IF EXISTS MADLIB_SCHEMA.normalize(float8[]) CASCADE;
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.normalize(x anyarray) RETURNS float8[]
+AS 'MODULE_PATHNAME', 'array_normalize' LANGUAGE C IMMUTABLE STRICT
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief Function to check if array contains NULL.
+ *
+ * @param x Array x.
+ * @return  True if x has NULL value else False.
+ *
+ */
+DROP FUNCTION IF EXISTS MADLIB_SCHEMA.array_contains_null(float8[]) CASCADE;
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_contains_null(x anyarray) RETURNS BOOLEAN
+AS 'MODULE_PATHNAME', 'array_contains_null' LANGUAGE C IMMUTABLE STRICT
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes an array as the input and computes the
+ *        cumulative sum with the first element being the same.
+ *        It requires that all the values are NON-NULL.
+ *
+ * @param x Array x
+ * @returns Cumulative sum of the elements in x.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_cum_sum(x anyarray) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_cum_sum'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes an array as the input and computes the
+ *        cumulative product with the first element being the same.
+ *        It requires that all the values are NON-NULL.
+ *
+ * @param x Array x
+ * @returns Cumulative product of the elements in x.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_cum_prod(x anyarray) RETURNS anyarray
+AS 'MODULE_PATHNAME', 'array_cum_prod'
+LANGUAGE C IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `NO SQL', `');
+
+/**
+ * @brief This function takes a 2-D array as the input and unnests it
+ *        by one level.
+ *        It returns a set of 1-D arrays that correspond to rows of the
+ *        input array as well as an ID column containing row positions occupied by
+ *        those 1-D arrays within the 2-D array (the ID column values start with
+ *        1 and not 0)
+ *
+ * @param x Array x
+ * @returns Set of 1-D arrays that corrspond to rows of x and an ID column.
+ *
+ */
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_unnest_2d_to_1d(
+  x ANYARRAY,
+  OUT unnest_row_id INT,
+  OUT unnest_result ANYARRAY
+)
+RETURNS SETOF RECORD
+AS
+$BODY$
+  SELECT t2.r::int, array_agg($1[t2.r][t2.c] order by t2.c) FROM
+  (
+    SELECT generate_series(array_lower($1,2),array_upper($1,2)) as c, t1.r
+    FROM
+    (
+      SELECT generate_series(array_lower($1,1),array_upper($1,1)) as r
+    ) t1
+  ) t2
+GROUP BY t2.r
+$BODY$ LANGUAGE SQL IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');
+
+CREATE OR REPLACE FUNCTION MADLIB_SCHEMA.array_unnest_2d_to_1d()
+RETURNS TEXT AS $$
+    return """
+------------------------------------------------------------------
+                        SUMMARY
+------------------------------------------------------------------
+This function takes a 2-D array as the input and unnests it by
+one level.
+It returns a set of 1-D arrays that correspond to rows of the
+input array as well as an ID column containing row positions occupied by
+those 1-D arrays within the 2-D array (the ID column values start with
+1 and not 0).
+
+------------------------------------------------------------------
+                        USAGE
+------------------------------------------------------------------
+
+ SELECT ({schema_madlib}.array_unnest_2d_to_1d(input_array)).* from input_table;
+
+If the function is called without the .* notation then it will return a
+composite record type with two attributes: the row ID and corresponding
+unnested array result.
+
+------------------------------------------------------------------
+                        EXAMPLE
+------------------------------------------------------------------
+SELECT id, (madlib.array_unnest_2d_to_1d(val)).*
+FROM (
+  SELECT 1::INT AS id, ARRAY[[1.3,2.0,3.2],[10.3,20.0,32.2]]::FLOAT8[][] AS val
+  UNION ALL
+  SELECT 2, ARRAY[[pi(),pi()/2],[2*pi(),pi()],[pi()/4,4*pi()]]::FLOAT8[][]
+) t
+ORDER BY 1,2;
+        """.format(schema_madlib='MADLIB_SCHEMA')
+$$ LANGUAGE PLPYTHONU IMMUTABLE
+m4_ifdef(`__HAS_FUNCTION_PROPERTIES__', `CONTAINS SQL', `');

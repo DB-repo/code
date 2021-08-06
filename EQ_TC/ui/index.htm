@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TagDB Search</title>
+  <meta name="description" value="The progressive search engine.">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <link rel="stylesheet" type="text/css" href="./css/colors.css">
+  <link rel="stylesheet" type="text/css" href="./css/modal.css">
+  <link rel="stylesheet" type="text/css" href="./css/serp.css?1">
+  <link rel="icon" type="image/png" href="./img/se.png">
+  <meta name="author" value="SuperMAD">
+  <script src="https://code.jquery.com/jquery-3.4.1.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.9.3/Chart.bundle.min.js"></script>
+
+    <!--<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"></script>-->
+  <!--<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css">-->
+<script src="https://code.jquery.com/ui/1.12.1/jquery-ui.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/jqueryui/1.12.1/jquery-ui.min.css" />
+
+  <script src="scripts/randomColor.js"></script>
+  <script src="scripts/charting.js"></script>
+  <script src="scripts/codemirror.js"></script>
+  <script src="scripts/sql.js"></script>
+  <link rel="stylesheet" href="css/codemirror.css">
+  <script src="scripts/location.js"></script>
+    <script src="scripts/schema.js"></script>
+  <script src="scripts/baselines.js"></script>
+  <script src="scripts/schema.js"></script>
+    <script src="scripts/approximation.js"></script>
+    <script src="scripts/pause.js"></script>
+  <script src="scripts/progressive.js"></script>
+
+
+  <!--===============================================================================================-->
+	<!--<link rel="stylesheet" type="text/css" href="vendor/bootstrap/css/bootstrap.min.css">-->
+<!--===============================================================================================-->
+	<link rel="stylesheet" type="text/css" href="fonts/font-awesome-4.7.0/css/font-awesome.min.css">
+<!--===============================================================================================-->
+	<link rel="stylesheet" type="text/css" href="vendor/perfect-scrollbar/perfect-scrollbar.css">
+<!--===============================================================================================-->
+	<link rel="stylesheet" type="text/css" href="css/main.css">
+<!--===============================================================================================-->
+
+</head>
+<body>
+  <div class="serp">
+    <div class="serp__layout">
+      <div class="serp__header">
+        <div class="serp__search">
+          <div class="serp__form">
+            <div>
+              <input name="q" type="search" value="Write Your Query Here"
+                     class="serp__query" 
+                     maxlength="512"
+                     autocomplete="off"
+                     title="Search"
+                     aria-label="Search"
+                     dir="ltr"
+                     spellcheck="false"
+                     autofocus="autofocus"
+                     id="query-box"
+              >
+            </div>
+            <button class="serp__button" aria-label="Search" type="button" id="execute-button">
+              <div class="serp__ico"></div>
+            </button>
+          </div>
+
+          <label class="serp__label__search">Epoch Duration(s): </label> <input class="serp__input__search" type="text" id="delay" >
+          <label class="serp__label__search">Max Epoch: </label> <input class="serp__input__search" type="text" id="epochs">
+          <label class="serp__label__search">Group By: </label> <input class="serp__checkbox__search" type="checkbox" id="group" value="group">
+
+          <select class="serp__list__search" name="dataType" id="dataType">
+            <option value="images">Images</option>
+            <option value="tweets">Tweets</option>
+            <option value="chart">Chart</option>
+            <option value="standard">Standard</option>
+            <option value="location">Location</option>
+          </select>
+
+          <label class="serp__label__search">Auto Load: </label> <input class="serp__checkbox__search" type="checkbox" id="autoload" value="autoload">
+          <button class="serp__button__search" id="reload" type="button">Reload</button>
+          <button class="serp__button__search" id="stop" type="button">Stop</button>
+          <button class="serp__button__search" id="pause" type="button">Pause</button>
+          <button class="serp__button__search" id="restart" type="button">Restart</button>
+
+          <br/>
+          <label class="serp__label__search">Method : </label>
+          <select style="width: 180px;" class="serp__list__search" name="algo" id="algo">
+            <option value="pro1">Benefit Based Progressive</option>
+            <option value="ba1">Baseline 1 (All Functions)</option>
+            <option value="ba2">Baseline 2 (All Objects)</option>
+            <option value="ba3">Baseline 3 (Random Object/Function)</option>
+          </select>
+
+          <label class="serp__label__search">Entries Per Page : </label>
+          <select style="width: 100px;" class="serp__list__search" name="algo" id="algo">
+            <option value="0">Unlimited</option>
+            <option value="100">100</option>
+            <option value="1000">1000</option>
+            <option value="10000">10000</option>
+          </select>
+          <label class="serp__label__search">Token: </label> <input class="serp__input__search" type="text" id="token" >
+          <label class="serp__label__search">Sampling: </label> <input class="serp__checkbox__search" type="checkbox" id="approx" value="sampling">
+          <label class="serp__label__search"> Num Splits: </label> <input class="serp__input__search" type="text" id="splits" >
+          <label class="serp__label__search">Approximation Level: </label> <input class="serp__input__search" type="text" id="">
+          <!--<input type='file' multiple/>-->
+
+        </div>
+        <a class="serp__logo" href="index.htm"></a>
+        <ul class="serp__nav">
+          <li id="results_li" class="serp__active"><a href="#" id="results_pane">Results</a></li>
+          <li id="qplan_li"><a href="#" id="explain">Query Plan</a></li>
+          <li id="schema_li"><a href="#" id="schema">Schema</a></li>
+          <li id="perf_li"><a href="#" id="performance">Performance</a></li>
+                   <script src="scripts/pause.js"></script> 
+         <script src="scripts/progressive.js"></script>
+        </ul>
+      </div>
+    </div>
+    <div class="serp__body">
+      <div class="serp__main serp__results">
+        <div class="serp__web">
+          <div id="dialog" title="Dialog Title" style="display:none"> Some text</div>
+          <canvas id="myChart" style="padding:100px 200px; "  width="900" height="500" ></canvas>
+        </div>
+
+        <div class="serp__pagination">
+          <ul>
+            <li><a class="serp__disabled"></a></li>
+            <li class="serp__pagination-active"><a href="#"></a></li>
+            <li><a href="#"></a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="serp__sidebar">
+        <div class="serp__sticky">
+          <div class="serp__headline">Query Plan</div>
+          <div class="serp__wiki" id="serp__wiki">
+            <a href="javascript: document.body.scrollIntoView(false);"><h2>Epoch 0</h2></a>
+            <p><b>Planned Enrichments</b></p>
+            <br/>
+            <p> Epoch Plan Will Appear Here </p>
+
+            <br/>
+            <p><b>Current Threshold</b> ---> <b>NA</b> </p>
+
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="serp__footer">
+      <div class="serp__bottom">
+        <ul class="serp__links">
+          <li><a href="#about">About</a></li>
+        </ul>
+        <p class="serp__copyright">&copy; 2020 SuperMAD</p>
+      </div>
+    </div>
+  </div>
+  <!-- Modal -->
+  <div class="modal" id="about" aria-hidden="true">
+    <div class="modal__dialog">
+      <div class="modal__header">
+        <h2>About</h2>
+        <a href="#" class="modal__close" aria-hidden="true">×</a>
+      </div>
+      <div class="modal__body">
+        <strong>Progressive Search/Enrichment</strong><br>
+        <p></p>
+      </div>
+      <a id="end"></a>
+    </div>
+  </div>
+  <!-- /Modal -->
+</body>
+</html>
+
+

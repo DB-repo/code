@@ -1,0 +1,135 @@
+"""
+@file schema.py_in
+
+@namespace progressive
+"""
+
+from constants import *
+
+import time
+import plpy
+import uuid
+import re
+
+
+function_classes = [
+    (1, 'madlib.mlp_predict'),
+    (2, 'madlib.svm_predict'),
+    (3, 'madlib.tree_predict'),
+    (4, 'madlib.forest_predict'),
+    (5, 'madlib.lda_predict'),
+    (6, 'madlib.madlib_keras_predict'),
+    (7, 'madlib.logregr_predict')
+]
+
+
+def setup_db(schema_madlib, **kwargs):
+    '''
+    In this function, we create system tables
+    '''
+
+    plpy.execute("""
+            CREATE TABLE IF NOT EXISTS {tbl} (token varchar(100) PRIMARY KEY, txid bigint, status int)
+            """.format(tbl=QUERY_SEQ))
+
+    plpy.execute("""
+            CREATE TABLE IF NOT EXISTS {tbl} 
+            (tbl_name varchar(100), attr_name varchar(100), attr_type varchar(15), num_labels integer, upi integer PRIMARY KEY(tbl_name, attr_name))
+            """.format(tbl=ATTR_TABLE))
+    
+    plpy.execute("""
+            CREATE TABLE IF NOT EXISTS {tbl} 
+            (tbl_name varchar(100), attr_name varchar(100), state integer[], uncertainty_ranges double precision[], 
+            next_func integer[], delta_uncertainty double precision[])
+            """.format(tbl=DECISION_TBL))
+
+    plpy.execute("""
+                CREATE TABLE IF NOT EXISTS {tbl} 
+                (id int, name varchar(200))
+                """.format(tbl=FUNC_CLASS_TBL))
+
+    plpy.execute("""
+                    CREATE TABLE IF NOT EXISTS {tbl} 
+                    (fcid int, fid SERIAL PRIMARY KEY, tbl_name varchar(200), attr_name varchar(200), model_tbl_name varchar(200),
+                    bitmap_index int, cost double precision, quality double precision, parameters text)
+                    """.format(tbl=FUNC_TBL))
+
+    for i in range(len(function_classes)):
+        plpy.execute("""
+                        INSERT INTO {tbl} VALUES 
+                        ({id}, '{name}')
+                        """.format(tbl=FUNC_CLASS_TBL, id=function_classes[i][0], name=function_classes[i][1]))
+
+
+def create_type(schema_madlib, create_stmt, **kwargs):
+
+    tbl, attrs = create_stmt.split("(")
+    tbl_name = tbl.strip().split()[-1].strip()
+
+    attrs = attrs.strip().strip(')').split(',')
+
+    raw_attr = []
+    for attr in attrs:
+        if attr.strip().startswith("PRIMARY"):
+            raw_attr.append(attr)
+            continue
+
+        name, data_type, enrich_type = attr.strip().split()
+        if enrich_type.startswith(IM_PREFIX):
+            enrich_type, num_attrs, upi = enrich_type.split(":")
+            plpy.execute("""INSERT INTO {tbl}(tbl_name, attr_name, attr_type, num_labels) 
+                                VALUES('{cur_tbl}','{attr_name}','{attr_type}', {num_attrs})
+                                """.format(tbl=ATTR_TABLE, cur_tbl=tbl_name, attr_name=name,
+                                           attr_type=enrich_type, num_attrs=num_attrs))
+        else:
+            plpy.execute("""
+                    INSERT INTO {tbl}(tbl_name, attr_name, attr_type) VALUES('{cur_tbl}','{attr_name}','{attr_type}')
+                    """.format(tbl=ATTR_TABLE, cur_tbl=tbl_name, attr_name=name, attr_type=enrich_type))
+
+        raw_attr.append(name+' '+data_type)
+
+    plpy.execute("""{create_tbl}({raw_attr_str})"""
+                 .format(create_tbl=tbl, raw_attr_str=','.join(raw_attr)))
+
+    plpy.execute("""CREATE TABLE {st_tbl}(id int, attribute varchar(50), state_bitmap integer[], output double precision[][], output_upi jsonb[],
+                    PRIMARY KEY(id, attribute))"""
+                 .format(st_tbl=tbl_name+'_'+STATE_SUFFIX))
+
+
+def assign_enrichment_functions(schema_madlib, tbl, attr_func, **kwargs):
+
+    for i in range(len(attr_func)):
+        plpy.execute("""
+                        INSERT INTO {tbl}(fcid, tbl_name, attr_name, model_tbl_name, bitmap_index,
+                        cost, quality, parameters) VALUES({fcid}, '{tbl_name}', '{attr_name}', '{model_tbl_name}',
+                        {bitmap_index}, {cost}, {quality}, '{parameters}')
+                        """.format(tbl=FUNC_TBL, tbl_name=tbl, attr_name=attr_func[i][0], fcid=int(attr_func[i][1]),
+                                   model_tbl_name=attr_func[i][2], bitmap_index=i+1, cost=float(attr_func[i][3]),
+                                   quality=float(attr_func[i][4]), parameters=attr_func[i][5]))
+
+
+def assign_decisions(schema_madlib, tbl, decision_func, **kwargs):
+
+    for i in range(len(decision_func)):
+        plpy.execute("""
+                        INSERT INTO {tbl}(tbl_name, attr_name, state,
+                        uncertainty_ranges, next_func, delta_uncertainty) 
+                        VALUES('{tbl_name}', '{attr_name}',
+                        {state}, {uncertainty_ranges}, {next_function}, {delta_uncertainty})
+                        """.format(tbl=DECISION_TBL, tbl_name=tbl, attr_name=decision_func[i][0],
+                                   state=decision_func[i][1],
+                                   uncertainty_ranges=decision_func[i][2], next_function=decision_func[i][3],
+                                   delta_uncertainty=decision_func[i][4]))
+
+
+def drop_type(schema_madlib, drop_stmt, **kwargs):
+
+    drop_tbl = drop_stmt.strip().split()[2]
+
+    plpy.execute("""DELETE FROM {tbl} WHERE tbl_name='{cur_tbl}'
+                        """.format(tbl=ATTR_TABLE, cur_tbl=drop_tbl))
+
+    plpy.execute(drop_stmt)
+
+
+

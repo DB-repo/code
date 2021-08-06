@@ -1,0 +1,103 @@
+"""
+@file probability.py_in
+
+@namespace progressive
+"""
+
+from constants import *
+
+import time
+import plpy
+import uuid
+import re
+import json
+
+def calculateProbValue(schema_madlib, objectid, statetable, attribute, attributeval,**kwargs):
+    sum_val = 0
+    count_val =0
+    ret = plpy.execute("""SELECT output, output_upi FROM {stateTable}  as ST 
+        WHERE ST. id = {objectID} AND ST.attribute ='{attribute}'""".format(stateTable=statetable, objectID=objectid,
+                                                                           attribute=attribute))
+
+    upi = False
+    prob_array = ret[0]['output']
+    if prob_array is None:
+        upi = True
+        prob_array = map(lambda x: json.loads(x), ret[0]['output_upi'])
+
+
+    for i in range(len(prob_array)):
+        try:
+            if upi:
+                x = prob_array[i][str(attributeval)]
+            else:
+                x = prob_array[i][attributeval]
+        except:
+            x = 0
+
+        if x > 0:
+            sum_val  = sum_val + x
+            count_val = count_val+1
+
+    if count_val > 0:
+        prob_val  = sum_val*1.0/count_val
+    else:
+        prob_val  = 0
+
+    return prob_val
+
+
+def calculateDistProb(schema_madlib, objectid, statetable, attribute, **kwargs):
+
+    attributeVal = 0
+    sum_val = 0.0
+    count_val = 0.0
+    prev_sum  = 0.0
+    prev_count = 0
+    prob_result_arr = []
+
+    ret = plpy.execute(""" SELECT output, output_upi FROM {stateTable}  as ST WHERE ST. id =  {objectID} 
+                AND ST.attribute ='{attribute}'""".format(stateTable=statetable, objectID=objectid,
+                                                                           attribute=attribute))
+    upi = False
+    prob_array = ret[0]['output']
+
+    if prob_array is None:
+        upi = True
+        prob_array = map(lambda x: json.loads(x), ret[0]['output_upi'])
+        ret1 = plpy.execute("""SELECT num_labels FROM {attr_tbl} WHERE tbl_name='{tbl}' AND attr_name='{attr}'
+                                """.format(attr_tbl=ATTR_TABLE, tbl=statetable.split('_', 1)[0], attr=attribute))
+        arr_len = ret1[0]['num_labels']
+    else:
+        arr_len = len(prob_array[0])
+    
+    while attributeVal < arr_len:
+
+        for i in range(len(prob_array)):
+            try:
+                if upi:
+                    x = prob_array[i][str(attributeVal)]
+                else:
+                    x = prob_array[i][attributeVal]
+            except:
+                x = 0
+
+            if x > 0:
+                sum_val = sum_val + x
+                count_val = count_val + 1
+
+        if (count_val - prev_count)  >0:
+            prob_val  = (sum_val - prev_sum)/(count_val- prev_count)
+        else :
+            prob_val  = 0.0
+
+        prob_result_arr.append(prob_val)
+        prev_sum  = sum_val
+        prev_count  = count_val
+        sum_val  = 0.0
+        count_val  = 0
+        prob_val  = 0.0
+        attributeVal   =  attributeVal + 1
+
+    return prob_result_arr
+

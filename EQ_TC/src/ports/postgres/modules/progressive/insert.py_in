@@ -1,0 +1,60 @@
+"""
+@file insert.py_in
+
+@namespace progressive
+"""
+
+from functions import run_function_in_insert
+from constants import *
+
+import time
+import plpy
+import uuid
+import re
+from csv import reader
+
+
+def initial_threshold(num_labels):
+
+    return 1.25*(1.0/num_labels)
+
+
+def enriched_insert(schema_madlib, insert_stmt, **kwargs):
+    '''
+    In this function, we run the cheapest enrichment function prior to
+    '''
+
+    with plpy.subtransaction():
+        plpy.execute(insert_stmt)
+
+    plpy.notice(insert_stmt)
+
+    regex = "(INSERT INTO\s+)(\w+)(\s+\()([\w+,?\s*]+)(\)\s+VALUES\s+\()(('?.+'?,?\s*)+)(\))"
+
+    m = re.match(regex, insert_stmt)
+
+    plpy.notice(m.groups())
+    tbl = m.group(2)
+    attrs = m.group(4).split(',')
+
+    values = None
+    for row in reader([m.group(6)]):
+        values = row
+
+    plpy.notice(tbl, attrs, values)
+
+    ret = plpy.execute("""
+            SELECT a.attr_name, a.num_labels, min(fid) as fid FROM {attr_tbl} a, {func_tbl} f
+            WHERE a.tbl_name='{tbl_name}' AND a.attr_type='imprecise' AND a.tbl_name=f.tbl_name AND a.attr_name=f.attr_name
+            GROUP BY a.attr_name, a.num_labels
+            """.format(attr_tbl=ATTR_TABLE, func_tbl=FUNC_TBL , tbl_name=tbl))
+
+    for i in range(len(attrs)):
+        for j in range(len(ret)):
+            if attrs[i].strip() == ret[j]['attr_name']:
+                values[i], prob = run_function_in_insert(ret[j]['fid'], int(values[0]), int(ret[j]['num_labels']))
+
+                if prob > initial_threshold(int(ret[j]['num_labels'])):
+                    plpy.execute("""UPDATE {tbl} SET {attr}={value} WHERE id={id}
+                        """.format(tbl=tbl, attr=ret[j]['attr_name'], value=str(values[i]), id=values[0]))
+

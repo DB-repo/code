@@ -1,0 +1,122 @@
+"""
+@file explain.py_in
+
+@namespace progressive
+"""
+
+from query import get_materialized_view_def, select_function_rewriter, select_function_rewriter_without_exec, select_function_rewriter_extract
+from aggregation import groupby_rewriter
+from algorithm import calculate_threshold, calculate_threshold_without_label
+from progressive import imprecise_attributes, filter_to_enrich, filter_to_enrich_whr, predicate_label_pair, precise_filter_view
+from constants import *
+from baselines import all_functions_rewrite_query
+
+import time
+import plpy
+import uuid
+import re
+import sqlparse
+
+
+class AllFunctionsBaselinePlan:
+    def __init__(self, query):
+        self.query = query
+        # Printing the actual query
+        self.explain = "-- Explain For The Query\n\n{}\n\n".format(
+            self.pprint(query.replace("@", ""))
+        )
+
+        self.explain += "Rewritten Query With Driver UDF (Executing All Functions)\n\n{}\n\n".format(
+            self.pprint(all_functions_rewrite_query(None, self.query))
+        )
+
+    def get_explain(self):
+        return self.explain
+
+    def pprint(self, query):
+        return sqlparse.format(query, reindent=True, keyword_case='upper')
+
+
+class Plan:
+
+    def __init__(self, query):
+
+        # Printing the actual query
+        self.explain = "-- Explain For The Query\n\n{}\n\n".format(
+            self.pprint(query.replace("@", ""))
+        )
+
+        self.query = query
+        self.is_groupby = False
+        if "GROUP BY" in query:
+            self.is_groupby = True
+
+        if self.is_groupby:
+            self.explain += "-- Detected A Group By Query\n\n{}\n\n".format(self.group_by_explain())
+
+        self.explain += self.query_explan()
+
+    def group_by_explain(self):
+        explain =  "-- Group By View Defintion\n\n"
+        view_query, query = groupby_rewriter(None, self.query)
+
+        explain += self.pprint("""CREATE VIEW {view} AS {view_q}
+                           """.format(view=GROUP_VIEW, view_q=view_query))
+        explain += "\n\n-- Query to be run using the Materialized View Method\n\n"
+        explain += self.pprint(query.replace("@", "")) + "\n"
+
+        self.query = query
+        return explain
+
+    def query_explan(self):
+
+        explain = "-- Query plan using Materialized view based implementation\n\n"
+
+        query_tbls = select_function_rewriter_without_exec(self.query)
+        select_extract = select_function_rewriter_extract(self.query)
+        sel_clause_extract = {}
+        to_enrich = {}
+        im_attrs_dict = {}
+        queries = {}
+        sel_clause = {}
+        labels = {}
+        to_enrich_whr = {}
+        precise_view = {}
+
+        for i, row in enumerate(query_tbls):
+
+            tbl = row[0].split('_')[0]
+            im_attrs_dict[tbl] = imprecise_attributes(None, tbl)
+            to_enrich[tbl] = filter_to_enrich(self.query, im_attrs_dict[tbl])
+            to_enrich_whr[tbl] = filter_to_enrich_whr(self.query, im_attrs_dict[tbl])
+            queries[tbl] = row[1]
+            sel_clause[tbl] = row[1].split('FROM')[0].strip()
+            labels[tbl] = predicate_label_pair(row[1], to_enrich_whr[tbl])
+            precise_view[tbl] = precise_filter_view(tbl, self.query, to_enrich_whr[tbl]).replace("'", "''")
+
+            explain += "Base Table '{}', Enriched Base Table '{}'\n{}\n\n".format(
+                tbl, row[0], self.pprint(select_extract[i][1]))
+
+        explain += "-- Materialized View Definition\n\n {}".format(
+            self.pprint(get_materialized_view_def(self.query))
+        )
+
+        return explain
+
+    def get_explain(self):
+        return self.explain
+
+    def pprint(self, query):
+        return sqlparse.format(query, reindent=True, keyword_case='upper')
+
+
+def get_query_plan(schema_madlib, query, method, **kwargs):
+
+    plan = None
+    if method in [0, 2, 3]:
+        plan = Plan(query)
+    elif method == 1:
+        plan = AllFunctionsBaselinePlan(query)
+
+    return plan.get_explain()
+

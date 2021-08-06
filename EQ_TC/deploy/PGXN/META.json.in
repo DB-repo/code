@@ -1,0 +1,36 @@
+{
+    "name": "madlib",
+    "abstract": "An open-source in-database analytics library",
+    "description": "An open-source in-database analytics library",
+    "version": "@MADLIB_PGXN_VERSION_STR@",
+    "maintainer": "MADlib contributors <dev@madlib.apache.org>",
+    "license": "apache_2_0",
+    "provides": {
+        "madlib": {
+            "file": "madlib--@MADLIB_VERSION_MAJOR@.@MADLIB_VERSION_MINOR@.@MADLIB_VERSION_PATCH@.sql",
+            "docfile": "deploy/PGXN/ReadMe.txt",
+            "version": "@MADLIB_VERSION_MAJOR@.@MADLIB_VERSION_MINOR@.@MADLIB_VERSION_PATCH@"
+        }
+    },
+    "resources": {
+        "homepage": "http://madlib.apache.org/",
+        "bugtracker": {
+            "web": "https://issues.apache.org/jira/browse/MADLIB/"
+        },
+        "repository": {
+            "url":  "https://github.com/apache/madlib.git",
+            "web":  "https://github.com/apache/madlib",
+            "type": "git"
+        }
+    },
+    "release_status": "stable",
+    "tags": [
+        "machine learning",
+        "analytics"
+    ],
+
+    "meta-spec": {
+        "version": "1.0.0",
+        "url": "http://pgxn.org/meta/spec.txt"
+    }
+}

@@ -1,0 +1,116 @@
+"""
+@file aggregation.py_in
+
+@namespace progressive
+"""
+
+from collections import defaultdict
+from constants import *
+
+import time
+import plpy
+import uuid
+import re
+import sqlparse
+
+
+def groupby_rewriter(schema_madlib, query, **kwargs):
+    '''
+    In this function, we setup the query parameters of epoch_len, max_epoch and ans_semantics. Based on the arguments, we call the appropriate
+    python functions to evaluate the queries.
+    '''
+    select, from_, where, group = query.split('@')
+
+    plpy.execute("""
+            DROP VIEW IF EXISTS {view}
+            """.format(view=GROUP_VIEW))
+
+    groups = []
+    for grp in group.strip().split(' ', 2)[2].split(','):
+        if '.' in grp:
+            tbl, attr = grp.strip().split(".")
+            groups.append("{}.{}_{}".format(MAT_VIEW, tbl, attr))
+        else:
+            groups.append(grp)
+
+    tbl_sel_columns = defaultdict(list)
+    tbl_sel_agg = defaultdict(list)
+
+    for sel in select.strip().split(' ', 1)[1].split(','):
+        agg = None
+        if '#' in sel:
+            real, extract = sel.split("#")
+            tbl = real.split('.', 1)[0].strip()
+            attr = sel
+        elif '(' in sel:
+            tbl = sel.split('.', 1)[0].split('(')[1]
+            attr = sel.split('.', 2)[1].split(')')[0]
+            agg = sel.split('(', 1)[0].strip()
+        else:
+            tbl = sel.split('.', 1)[0].strip()
+            attr = sel.split()[0].split('.')[1]
+
+        if agg is None:
+            tbl_sel_columns[tbl].append(attr)
+        else:
+            tbl_sel_agg[tbl].append((agg, attr))
+
+    plpy.notice(tbl_sel_columns)
+
+    columns = ','.join(
+        map(lambda tbl: ','.join(
+            map(lambda col: "{}.{}_{}".format(MAT_VIEW,tbl,col) if '#' not in col else col.split("#")[1], tbl_sel_columns[tbl])
+        ), tbl_sel_columns.keys())
+    )
+    aggs = ','.join(
+        map(lambda tbl: ','.join(
+            map(lambda col: "{agg}({mat_view}.{tbl}_{attr}) AS {agg}_{tbl}_{attr}".format(agg=col[0], mat_view=MAT_VIEW, tbl=tbl, attr=col[1]), tbl_sel_agg[tbl])
+        ), tbl_sel_agg.keys())
+    )
+
+    view_select = aggs
+    if columns:
+        view_select = columns + "," +view_select
+
+    mat_columns = ','.join(
+        map(lambda tbl: ','.join(
+            map(lambda col: "{}.{} AS {}_{}".format(tbl, col, tbl, col) if '#' not in col else col.split("#")[0], tbl_sel_columns[tbl])
+        ), tbl_sel_columns.keys())
+    )
+    mat_aggs = ','.join(
+        map(lambda tbl: ','.join(
+            map(lambda col: "{}.{} AS {}_{}".format(tbl, col[1], tbl, col[1]), tbl_sel_agg[tbl])
+        ), tbl_sel_agg.keys())
+    )
+
+    mat_view_select = mat_aggs
+    if columns:
+        mat_view_select = mat_columns + "," + mat_view_select
+
+
+    view_query = "SELECT {sel} FROM {mat_view} GROUP BY {group}".format(sel=view_select, mat_view=MAT_VIEW, group=','.join(groups))
+    mat_view_query = "SELECT {sel} @{from_clause} @{where}".format(sel=mat_view_select, from_clause=from_, where=where)
+
+    plpy.notice(view_query)
+    plpy.notice(mat_view_query)
+
+    return (view_query, mat_view_query)
+
+
+def imprecise_attributes(tbl):
+    ret = plpy.execute("""
+                SELECT distinct a.attr_name as attr_name FROM {attr_tbl} a
+                WHERE a.tbl_name='{tbl_name}' AND a.attr_type='imprecise'
+                """.format(attr_tbl=ATTR_TABLE, tbl_name=tbl))
+
+    return [x['attr_name'] for x in ret]
+
+
+def precise_attributes(tbl):
+    ret = plpy.execute("""
+                SELECT distinct a.attr_name as attr_name FROM {attr_tbl} a
+                WHERE a.tbl_name='{tbl_name}' AND a.attr_type='precise'
+                """.format(attr_tbl=ATTR_TABLE, tbl_name=tbl))
+
+    return [x['attr_name'] for x in ret]
+

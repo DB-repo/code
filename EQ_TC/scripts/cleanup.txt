@@ -1,0 +1,30 @@
+drop view single_row_view;
+
+drop materialized view query_result;
+
+drop table progressive_attrs;
+drop table progressive_decision;
+drop table progressive_function_classes;
+drop table progressive_functions;
+
+
+drop table query_benefit;
+drop table query_plan;
+
+drop table output_proba_tbl;
+drop table output_response_tbl;
+
+
+drop table treatments_state;
+drop table treatments_prog;
+drop table treatments;
+
+drop table patients_state;
+drop table patients_prog;
+drop table patients;
+
+drop table treatments_dt_model;
+drop table patients_dt_model;
+drop table patients_dt_model_summary;
+drop table treatments_dt_model_summary;
+

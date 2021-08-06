@@ -1,0 +1,31 @@
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
+
+<script type="text/javascript">
+$(function () {
+    $(":file").change(function () {
+        /*if (this.files && this.files[0]) {
+            var reader = new FileReader();
+            reader.onload = imageIsLoaded;
+            reader.readAsDataURL(this.files[0]);
+        }*/
+            var noOfFiles = this.files.length;
+        for(var i=0; i < noOfFiles; i++){
+        	  var reader = new FileReader();
+            reader.onload = imageIsLoaded;
+            reader.readAsDataURL(this.files[i]);
+        }
+    });
+});
+
+function imageIsLoaded(e) {
+var imgTmpl = '<img src='+e.target.result+'>';
+    $('.img-container').append(imgTmpl);
+
+
+};
+</script>
+
+<input type='file' multiple/>
+<div class="img-container">
+
+</div>

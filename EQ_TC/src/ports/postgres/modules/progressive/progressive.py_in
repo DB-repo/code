@@ -1,0 +1,716 @@
+"""
+@file progressive2.py_in
+
+@namespace progressive
+"""
+
+from query import select_function_rewriter, select_function_rewriter_without_exec, select_function_rewriter_extract
+from aggregation import groupby_rewriter
+from algorithm import calculate_threshold, calculate_threshold_without_label
+from constants import *
+from sklearn.metrics import mean_squared_error
+from math import sqrt
+
+import numpy as np
+import time
+import plpy
+import uuid
+import re
+import sqlparse
+
+
+def calculate_precision_recall(table, query):
+
+    try:
+        ret = plpy.execute("SELECT id FROM {pro_tbl}".format(pro_tbl=table+"_"+TBL_SUFFIX))
+        pred_ids = set()
+        for row in ret:
+            pred_ids.add(row['id'])
+
+        ret = plpy.execute("SELECT id FROM ({sel}) as in_query".format(sel=query.replace(table, table+"_"+GT_TBL_SUFFIX)))
+        actual_ids = set()
+        for row in ret:
+            actual_ids.add(row['id'])
+        return len(actual_ids.intersection(pred_ids))*1.0/len(pred_ids), len(actual_ids.intersection(pred_ids))*1.0/len(actual_ids), len(actual_ids.intersection(pred_ids))*1.0/len(actual_ids.union(pred_ids))
+        #return len(ret_actual.intersection(ret))*1.0/len(ret), len(ret_actual.intersection(ret))*1.0/len(ret_actual), len(ret_actual.intersection(ret))*1.0/len(ret_actual.union(ret))
+        
+    except Exception as e:
+        plpy.notice(e)
+        return (-1.0, -1.0, -1.0)
+
+def calculate_sizes(table, query):
+    pass
+
+def query_setup(schema_madlib, query, **kwargs):
+    """ Function that sets up the query execution and executes epoch 0 (initial run)
+    """
+
+    # Logging Performance
+    start = time.time()
+
+    query_tbls = select_function_rewriter(schema_madlib, query)
+    to_enrich = {}
+    queries = {}
+    sel_clause = {}
+
+
+    # create a metrics table to store precison, and recall information
+    plpy.execute("""CREATE TABLE IF NOT EXISTS {tbl}
+                    (tbl VARCHAR(50), epoch int, prec double precision, recall double precision, jaccard double precision)
+                        """.format(tbl=METRICS_TBL))
+
+    for row in query_tbls:
+        tbl = row[0].split('_')[0]
+        to_enrich[tbl] = imprecise_attributes(schema_madlib, tbl)
+        queries[tbl] = row[1]
+        sel_clause[tbl] = row[1].split('FROM')[0].strip()
+
+        # Add the actual results in all tbl
+        plpy.execute("""INSERT INTO {pro_tbl} {sel}
+                            """.format(pro_tbl=row[0], sel=row[1]))
+
+        # Calculating Precision Recall and Logging
+        precision, recall, jaccard = calculate_precision_recall(tbl, row[1])
+        plpy.execute("""INSERT INTO {met_tbl}(tbl, epoch, prec, recall, jaccard) VALUES ('{tbl}', 0, {prec}, {recall}, {jc})
+                                    """.format(met_tbl=METRICS_TBL, tbl=tbl, prec=precision, recall=recall, jc=jaccard))
+
+    # create a benefit table
+    plpy.execute("""CREATE TABLE IF NOT EXISTS {tbl}
+                    (oid int, fid int, benefit double precision, tbl_name varchar(100), attr_name varchar(100), prob float)
+                        """.format(tbl=BENEFIT_TBL))
+
+
+    plpy.execute("""
+            CREATE TABLE IF NOT EXISTS {tbl} 
+            (epoch integer)
+            """.format(tbl=EPOCH_TBL))
+
+    plpy.execute("""
+            INSERT INTO {tbl} 
+            VALUES(0)
+            """.format(tbl=EPOCH_TBL))
+
+    # Create table to store performance metrics
+    plpy.execute("""
+            CREATE TABLE IF NOT EXISTS {tbl} 
+            (epoch integer, setup float, threshold_calculation float, benefit_calculation float, plan_generation float, enrichment float,
+             update_state float, delta_calculation float,
+            planned_enrichments integer, executed_enrichments integer, successfull_enrichments integer)
+            """.format(tbl=PERF_TBL))
+
+    # Create table to store storage overheads
+    plpy.execute("""
+            CREATE TABLE IF NOT EXISTS {tbl}
+            (epoch integer, benefit_table_size varchar(50),benefit_rc int, plan_table_size varchar(50), plan_rc int,  imv_size varchar(50), imv_rc int)
+            """.format(tbl=STORAGE_TBL))
+
+    # Logging Performance
+    end = time.time()
+    plpy.execute("""
+            INSERT INTO {tbl}(epoch, setup, threshold_calculation, benefit_calculation, plan_generation, enrichment, update_state, delta_calculation,
+            planned_enrichments, executed_enrichments, successfull_enrichments) 
+            VALUES(0, {setup}, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+            """.format(tbl=PERF_TBL, setup=end-start))
+    plpy.execute("""
+            INSERT INTO {tbl}(epoch, benefit_table_size, benefit_rc, plan_table_size, plan_rc, imv_size, imv_rc)
+            VALUES(0, '0', 0, '0', 0, '0', 0)
+            """.format(tbl=STORAGE_TBL))
+
+
+def groupby_query_setup(schema_madlib, query, **kwargs):
+    """ Function that sets up a GROUP BY query execution and executes epoch 0 (initial run)
+    """
+
+    # Logging Performance
+    start = time.time()
+
+    view_query, query = groupby_rewriter(schema_madlib, query)
+    query_tbls = select_function_rewriter(schema_madlib, query)
+    to_enrich = {}
+    queries = {}
+    sel_clause = {}
+
+    # create a metrics table to store precison, and recall information
+    plpy.execute("""CREATE TABLE IF NOT EXISTS {tbl}
+                    (tbl VARCHAR(50), epoch int, prec double precision, recall double precision, jaccard double precision)
+                        """.format(tbl=METRICS_TBL))
+
+    for row in query_tbls:
+        tbl = row[0].split('_')[0]
+        to_enrich[tbl] = imprecise_attributes(schema_madlib, tbl)
+        queries[tbl] = row[1]
+        sel_clause[tbl] = row[1].split('FROM')[0].strip()
+
+        # plpy.notice("""INSERT INTO {pro_tbl} {sel}
+        #                     """.format(pro_tbl=row[0], sel=row[1]))
+        # Add the actual results in all tbl
+        plpy.execute("""INSERT INTO {pro_tbl} {sel}
+                            """.format(pro_tbl=row[0], sel=row[1]))
+
+        # Calculating Precision Recall and Logging
+        precision, recall, jaccard = calculate_precision_recall(tbl, row[1])
+        plpy.execute("""INSERT INTO {met_tbl}(tbl, epoch, prec, recall, jaccard) VALUES ('{tbl}', 0, {prec}, {recall}, {jc})
+                                            """.format(met_tbl=METRICS_TBL, tbl=tbl, prec=precision, recall=recall, jc=jaccard))
+
+    # create a benefit table
+    plpy.execute("""CREATE TABLE IF NOT EXISTS {tbl}
+                    (oid int, fid int, benefit double precision, tbl_name varchar(100), attr_name varchar(100), prob float)
+                        """.format(tbl=BENEFIT_TBL))
+
+    plpy.execute("""
+                   CREATE OR REPLACE VIEW {view} AS {view_q}
+                   """.format(view=GROUP_VIEW, view_q=view_query))
+
+    plpy.notice(
+        "Group By View Created\n{}\n\n".format(
+            sqlparse.format("""\nCREATE VIEW {view} AS {view_q}\n
+                       """.format(view=GROUP_VIEW, view_q=view_query), reindent=True, keyword_case='upper'))
+    )
+
+    plpy.execute("""
+            CREATE TABLE IF NOT EXISTS {tbl} 
+            (epoch integer)
+            """.format(tbl=EPOCH_TBL))
+
+    plpy.execute("""
+            INSERT INTO {tbl} 
+            VALUES(0)
+            """.format(tbl=EPOCH_TBL))
+
+    # Create table to store performance metrics
+    plpy.execute("""
+            CREATE TABLE IF NOT EXISTS {tbl} 
+            (epoch integer, setup float, threshold_calculation float, benefit_calculation float, plan_generation float, enrichment float, 
+            update_state float, delta_calculation float,
+            planned_enrichments integer, executed_enrichments integer, successfull_enrichments integer)
+            """.format(tbl=PERF_TBL))
+    plpy.execute("""
+            CREATE TABLE IF NOT EXISTS {tbl}
+            (epoch integer, benefit_table_size varchar(50),benefit_rc int, plan_table_size varchar(50), plan_rc int,  imv_size varchar(50), imv_rc int)
+            """.format(tbl=STORAGE_TBL))
+
+    # Logging Performance
+    end = time.time()
+    plpy.execute("""
+                INSERT INTO {tbl}(epoch, setup, threshold_calculation, benefit_calculation, plan_generation, enrichment, update_state, delta_calculation,
+                planned_enrichments, executed_enrichments, successfull_enrichments) 
+                VALUES(0, {setup}, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+                """.format(tbl=PERF_TBL, setup=end-start))
+    
+    plpy.execute("""
+            INSERT INTO {tbl}(epoch, benefit_table_size, benefit_rc, plan_table_size, plan_rc, imv_size, imv_rc)
+            VALUES(0, '0', 0, '0', 0, '0', 0)
+            """.format(tbl=STORAGE_TBL))
+    return query
+
+
+def epoch_handler(schema_madlib, query, delay, **kwargs):
+
+    # Logging Performance
+    start = time.time()
+    setup = threshold_calculation = benefit_calculation = plan_generation = enrichment = delta_calculation = 0
+    planned_enrichments = executed_enrichments = successfull_enrichments = 0
+    update_state_time = 0
+    current_epoch = None
+    start = time.time()
+    plpy.execute("set epoch.executed = 0")
+    plpy.execute("set epoch.success = 0")
+    plpy.execute("set epoch.update_state = 0")
+
+    query_tbls = select_function_rewriter_without_exec(query)
+    select_extract = select_function_rewriter_extract(query)
+    sel_clause_extract = {}
+    to_enrich = {}
+    im_attrs_dict = {}
+    queries = {}
+    sel_clause = {}
+    labels = {}
+    to_enrich_whr = {}
+    to_enrich_sel = {}
+    precise_view = {}
+
+    for row in query_tbls:
+        tbl = row[0].split('_')[0]
+        im_attrs_dict[tbl] = imprecise_attributes(schema_madlib, tbl)
+        to_enrich[tbl] = filter_to_enrich(query, im_attrs_dict[tbl])
+        to_enrich_whr[tbl] = filter_to_enrich_whr(query, im_attrs_dict[tbl])
+        to_enrich_sel[tbl] = filter_to_enrich_select(query, im_attrs_dict[tbl])
+
+        queries[tbl] = row[1]
+        sel_clause[tbl] = row[1].split('FROM')[0].strip()
+        labels[tbl] = predicate_label_pair(row[1], to_enrich_whr[tbl])
+
+        precise_view[tbl] = precise_filter_view(tbl, query, to_enrich_whr[tbl]).replace("'", "''")
+
+    for row in select_extract:
+        tbl = row[0].split('_')[0]
+        sel_clause_extract[tbl] = row[1].split('FROM')[0].strip()
+
+    plpy.execute("""
+            UPDATE {tbl} 
+            SET epoch = epoch+1
+            """.format(tbl=EPOCH_TBL))
+
+    current_epoch = plpy.execute("""
+                select max(epoch) as max_epoch FROM {tbl} 
+                """.format(tbl=EPOCH_TBL))[0]['max_epoch']
+
+    # create a table to store thresholds
+    plpy.execute("""DROP TABLE IF EXISTS {tbl}
+                            """.format(tbl=THRESHOLD_TBL))
+    plpy.execute("""CREATE TABLE {tbl}
+                                (tbl_name varchar(100), attr_name varchar(100), threshold double precision)
+                                    """.format(tbl=THRESHOLD_TBL))
+
+
+    # Logging Performance
+    end = time.time()
+    setup = end - start
+
+    for tbl, attrs in to_enrich.items():
+        for attr in attrs:
+            if current_epoch == 1:
+                p_filter = "SELECT {tbl}.id FROM {tbl} {whr}".format(tbl=tbl, whr=precise_view[tbl])
+            else:
+                p_filter = """SELECT {tbl}.oid as id FROM {tbl} WHERE tbl_name=''{tbl_name}'' AND attr_name=''{attr}''
+                            """.format(tbl=PLAN_TBL, tbl_name=tbl, attr=attr)
+
+            if attr in to_enrich_whr[tbl]:
+                # Logging Performance
+                start = time.time()
+
+                if current_epoch == 1:
+                    plpy.execute("""INSERT INTO {benefit_table}(oid, fid, benefit, tbl_name, attr_name, prob)
+                                    SELECT *
+                                    FROM madlib.calculateBenefit('{tbl}', '{tbl_state}', '{attr}', {label}, '{filter_view}')
+                                 """.format(benefit_table=BENEFIT_TBL, tbl=tbl, tbl_state=tbl + '_' + STATE_SUFFIX,
+                                            attr=attr, label=labels[tbl][attr],
+                                            filter_view=p_filter))
+                else:
+                    plpy.execute("""UPDATE {benefit_table} SET benefit =  new_benefit_tbl.column3, fid = new_benefit_tbl.column2, prob=new_benefit_tbl.column6
+                                        FROM madlib.calculateBenefit('{tbl}', '{tbl_state}', '{attr}', {label}, '{filter_view}') as new_benefit_tbl
+                                            WHERE {benefit_table}.oid=new_benefit_tbl.column1 AND {benefit_table}.tbl_name=new_benefit_tbl.column4
+                                            AND {benefit_table}.attr_name=new_benefit_tbl.column5
+                                     """.format(benefit_table=BENEFIT_TBL, tbl=tbl,
+                                                tbl_state=tbl + '_' + STATE_SUFFIX,
+                                                attr=attr, label=labels[tbl][attr],
+                                                filter_view=p_filter))
+
+                # Logging Performance
+                end = time.time()
+                benefit_calculation += (end - start)
+                start = time.time()
+
+                plpy.execute("""INSERT INTO {tbl}(tbl_name, attr_name, threshold) 
+                                           VALUES('{tbl_name}', '{attr_name}', {threshold})
+                                           """.format(tbl=THRESHOLD_TBL, tbl_name=tbl, attr_name=attr,
+                                                      threshold=calculate_threshold(tbl + '_' + STATE_SUFFIX, attr,
+                                                                                    int(labels[tbl][attr]), precise_view[tbl])))
+
+                # Logging Performance
+                end = time.time()
+                threshold_calculation += (end - start)
+
+            else:
+                # Logging Performance
+                start = time.time()
+
+                if current_epoch == 1:
+                    plpy.execute("""INSERT INTO {benefit_table}(oid, fid, benefit, tbl_name, attr_name, prob)
+                                    SELECT *
+                                    FROM madlib.calculateBenefitWithoutVal('{tbl}', '{tbl_state}', '{attr}', '{filter_view}')
+                                 """.format(benefit_table=BENEFIT_TBL, tbl=tbl,
+                                            tbl_state=tbl + '_' + STATE_SUFFIX,
+                                            attr=attr, filter_view=p_filter))
+                else:
+                    plpy.execute("""UPDATE {benefit_table} SET benefit = new_benefit_tbl.column3, fid = new_benefit_tbl.column2, prob=new_benefit_tbl.column6
+                                    FROM madlib.calculateBenefitWithoutVal('{tbl}', '{tbl_state}', '{attr}', '{filter_view}') as new_benefit_tbl
+                                    WHERE {benefit_table}.oid=new_benefit_tbl.column1 AND {benefit_table}.tbl_name=new_benefit_tbl.column4
+                                            AND {benefit_table}.attr_name=new_benefit_tbl.column5
+                                 """.format(benefit_table=BENEFIT_TBL, tbl=tbl,
+                                            tbl_state=tbl + '_' + STATE_SUFFIX,
+                                            attr=attr, filter_view=p_filter))
+
+                # Logging Performance
+                end = time.time()
+                benefit_calculation += (end - start)
+                start = time.time()
+
+                plpy.execute("""INSERT INTO {tbl}(tbl_name, attr_name, threshold) 
+                                                           VALUES('{tbl_name}', '{attr_name}', {threshold})
+                                                           """.format(tbl=THRESHOLD_TBL, tbl_name=tbl, attr_name=attr,
+                                                                      threshold=calculate_threshold_without_label(
+                                                                          tbl + '_' + STATE_SUFFIX, attr,
+                                                                          precise_view[tbl])))
+
+                # Logging Performance
+                end = time.time()
+                threshold_calculation += (end - start)
+
+    # Logging Performance
+    start = time.time()
+
+    # create a plan table
+    plpy.execute("""DROP TABLE IF EXISTS {tbl}
+                        """.format(tbl=PLAN_TBL))
+    plpy.execute("""CREATE TABLE {tbl}
+                            (oid int, fid int, benefit double precision, tbl_name varchar(100), attr_name varchar(100))
+                                """.format(tbl=PLAN_TBL))
+
+    plpy.execute("""
+                INSERT INTO {plan_table}(oid, fid, benefit, tbl_name, attr_name)
+                SELECT bt.oid, bt.fid, bt.benefit, bt.tbl_name, bt.attr_name 
+                FROM 
+                     {benefit_table} as bt, 
+                     (SELECT ben.tbl_name, ben.oid, sum(ben.cost) OVER w as sum_ 
+                     FROM 
+                        (SELECT b.tbl_name, b.oid, count(*) as cnt, sum(f.cost) as cost, sum(b.benefit) as benefit 
+                        FROM 
+                            {benefit_table} as b, 
+                            progressive_functions as f,
+                            {thr_tbl} as th_tbl 
+                        WHERE f.fid=b.fid AND th_tbl.tbl_name=b.tbl_name AND th_tbl.attr_name=b.attr_name AND b.prob <= 1.0 and b.tbl_name='tweets'
+                        GROUP BY b.tbl_name, b.oid
+                        HAVING count(*) = (SELECT num_enrichments FROM {query_stats} WHERE tbl_name=b.tbl_name) ) as ben 
+                     WINDOW w AS (ORDER BY ben.benefit desc, ben.tbl_name, ben.oid)) as c  
+                WHERE c.sum_ <= {delay} AND c.oid=bt.oid AND c.tbl_name=bt.tbl_name AND bt.tbl_name='tweets'
+                """.format(benefit_table=BENEFIT_TBL, plan_table=PLAN_TBL, func_table=FUNC_TBL, delay=delay, query_stats=QUERY_STATS,
+                           thr_tbl=THRESHOLD_TBL))
+    
+    plpy.execute("""
+                INSERT INTO {plan_table}(oid, fid, benefit, tbl_name, attr_name)
+                SELECT bt.oid, bt.fid, bt.benefit, bt.tbl_name, bt.attr_name 
+                FROM 
+                     {benefit_table} as bt, 
+                     (SELECT ben.tbl_name, ben.oid, sum(ben.cost) OVER w as sum_ 
+                     FROM 
+                        (SELECT b.tbl_name, b.oid, count(*) as cnt, sum(f.cost) as cost, sum(b.benefit) as benefit 
+                        FROM 
+                            {benefit_table} as b, 
+                            progressive_functions as f,
+                            {thr_tbl} as th_tbl 
+                        WHERE f.fid=b.fid AND th_tbl.tbl_name=b.tbl_name AND th_tbl.attr_name=b.attr_name AND b.prob <= 1.0 and b.tbl_name='images' 
+                        GROUP BY b.tbl_name, b.oid
+                        HAVING count(*) = (SELECT num_enrichments FROM {query_stats} WHERE tbl_name=b.tbl_name) ) as ben 
+                     WINDOW w AS (ORDER BY ben.benefit desc, ben.tbl_name, ben.oid)) as c  
+                WHERE c.sum_ <= {delay} AND c.oid=bt.oid AND c.tbl_name=bt.tbl_name AND bt.tbl_name = 'images'
+                """.format(benefit_table=BENEFIT_TBL, plan_table=PLAN_TBL, func_table=FUNC_TBL, delay=delay, query_stats=QUERY_STATS,
+                           thr_tbl=THRESHOLD_TBL))
+    '''
+    plpy.notice("""
+                SELECT bt.oid, bt.fid, bt.benefit, bt.tbl_name, bt.attr_name
+                FROM
+                     {benefit_table} as bt,
+                     (SELECT ben.tbl_name, ben.oid, sum(ben.cost) OVER w as sum_
+                     FROM
+                        (SELECT b.tbl_name, b.oid, count(*) as cnt, sum(f.cost) as cost, sum(b.benefit) as benefit
+                        FROM
+                            {benefit_table} as b,
+                            progressive_functions as f,
+                            {thr_tbl} as th_tbl
+                        WHERE f.fid=b.fid AND th_tbl.tbl_name=b.tbl_name AND th_tbl.attr_name=b.attr_name AND b.prob <= 1.0 and b.tbl_name='tweets'
+                        GROUP BY b.tbl_name, b.oid
+                        HAVING count(*) = (SELECT num_enrichments FROM {query_stats} WHERE tbl_name=b.tbl_name) ) as ben
+                     WINDOW w AS (ORDER BY ben.benefit desc, ben.tbl_name, ben.oid)) as c
+                WHERE c.sum_ <= {delay} AND c.oid=bt.oid AND c.tbl_name=bt.tbl_name AND bt.tbl_name = 'tweets'
+                """.format(benefit_table=BENEFIT_TBL, plan_table=PLAN_TBL, func_table=FUNC_TBL, delay=delay, query_stats=QUERY_STATS,
+                           thr_tbl=THRESHOLD_TBL))
+    '''
+    # Logging Performance
+    end = time.time()
+    plan_generation = end - start
+    planned_enrichments = plpy.execute("""
+                        select count(*) as count_ FROM {tbl} 
+                        """.format(tbl=PLAN_TBL))[0]['count_']
+
+    benefit_rc = plpy.execute("""
+                        select count(*) as count_ FROM {tbl}
+                        """.format(tbl=BENEFIT_TBL))[0]['count_']
+
+    imv_rc = plpy.execute("""
+                        select count(*) as count_ FROM {tbl}
+                        """.format(tbl=MAT_VIEW))[0]['count_']
+
+    benefit_table_size = plpy.execute("""
+                        select pg_size_pretty(pg_total_relation_size('{tbl}')) as count_
+                        """.format(tbl=BENEFIT_TBL))[0]['count_']
+    
+    plan_table_size = plpy.execute("""
+                        select pg_size_pretty(pg_total_relation_size('{tbl}')) as count_ 
+                        """.format(tbl=PLAN_TBL))[0]['count_']
+    
+    imv_size = plpy.execute("""
+                        select pg_size_pretty(pg_total_relation_size('{tbl}')) as count_ 
+                        """.format(tbl=MAT_VIEW))[0]['count_']
+
+    pprint_plan()
+
+    for tbl, attrs in to_enrich.items():
+
+        plpy.notice("""{sel} FROM {tbl}, 
+                                (SELECT oid, string_agg(concat(attr_name, ':', fid), ',') as attr_fid  FROM {plan_tbl} WHERE {plan_tbl}.tbl_name='{tbl}' GROUP BY oid) as p 
+                                WHERE {tbl}.id=p.oid {pred_str}
+                                                                     """.format(sel=sel_clause[tbl], plan_tbl=PLAN_TBL,
+                                                                                pro_tbl=tbl + '_' + TBL_SUFFIX, tbl=tbl,
+                                                                                pred_str=enriched_predicate_multi_str(
+                                                                                    queries[tbl],
+                                                                                    attrs)))
+        # Logging Performance
+        start = time.time()
+
+        plpy.execute("""{sel} FROM {tbl}, 
+                        (SELECT oid, string_agg(concat(attr_name, ':', fid), ',') as attr_fid  FROM {plan_tbl} WHERE {plan_tbl}.tbl_name='{tbl}' GROUP BY oid) as p 
+                        WHERE {tbl}.id=p.oid {pred_str}
+                                                             """.format(sel=sel_clause[tbl], plan_tbl=PLAN_TBL,
+                                                                        pro_tbl=tbl + '_' + TBL_SUFFIX, tbl=tbl,
+                                                                        pred_str=enriched_predicate_multi_str(queries[tbl],
+                                                                                                        attrs)))
+        # Logging Performance
+        end = time.time()
+        enrichment += (end - start)
+        start = time.time()
+
+        plpy.notice("""INSERT INTO {pro_tbl}
+                                {sel} FROM {tbl}, (SELECT distinct oid FROM {plan_tbl} WHERE {plan_tbl}.tbl_name='{tbl}') as p WHERE {tbl}.id=p.oid {pred_str} {conflict}
+                                             """.format(sel=sel_clause_extract[tbl], plan_tbl=PLAN_TBL,
+                                                        pro_tbl=tbl + '_' + TBL_SUFFIX, tbl=tbl,
+                                                        pred_str=predicate_str(queries[tbl]),
+                                                        conflict=on_conflict_stmt(tbl, to_enrich_sel[tbl])))
+        plpy.execute("""INSERT INTO {pro_tbl}
+                                {sel} FROM {tbl}, (SELECT distinct oid FROM {plan_tbl} WHERE {plan_tbl}.tbl_name='{tbl}') as p WHERE {tbl}.id=p.oid {pred_str} {conflict}
+                                             """.format(sel=sel_clause_extract[tbl], plan_tbl=PLAN_TBL,
+                                                        pro_tbl=tbl + '_' + TBL_SUFFIX, tbl=tbl,
+                                                        pred_str=predicate_str(queries[tbl]),
+                                                        conflict=on_conflict_stmt(tbl, to_enrich_sel[tbl])))
+        
+        plpy.notice("""DELETE FROM {pro_tbl} WHERE id IN
+                                (SELECT distinct oid FROM {plan_tbl} WHERE {plan_tbl}.tbl_name='{tbl}' EXCEPT
+                                 SELECT distinct p.oid FROM {tbl}, (SELECT distinct oid FROM {plan_tbl} WHERE {plan_tbl}.tbl_name='{tbl}') as p WHERE {tbl}.id=p.oid {pred_str})
+                                             """.format(plan_tbl=PLAN_TBL,
+                                                        pro_tbl=tbl + '_' + TBL_SUFFIX, tbl=tbl,
+                                                        pred_str=predicate_str(queries[tbl])))
+        
+        plpy.execute("""DELETE FROM {pro_tbl} WHERE id IN 
+                                (SELECT distinct oid FROM {plan_tbl} WHERE {plan_tbl}.tbl_name='{tbl}' EXCEPT
+                                 SELECT distinct p.oid FROM {tbl}, (SELECT distinct oid FROM {plan_tbl} WHERE {plan_tbl}.tbl_name='{tbl}') as p WHERE {tbl}.id=p.oid {pred_str})
+                                             """.format(plan_tbl=PLAN_TBL,
+                                                        pro_tbl=tbl + '_' + TBL_SUFFIX, tbl=tbl,
+                                                        pred_str=predicate_str(queries[tbl])))
+        
+        # Logging Performance
+        end = time.time()
+        delta_calculation += (end - start)
+
+        # Calculating Precision Recall and Logging
+        precision, recall, jaccard = calculate_precision_recall(tbl, queries[tbl])
+        plpy.execute("""INSERT INTO {met_tbl}(tbl, epoch, prec, recall, jaccard) VALUES ('{tbl}', 0, {prec}, {recall}, {jc})
+                                    """.format(met_tbl=METRICS_TBL, tbl=tbl, prec=precision, recall=recall, jc=jaccard))
+    plpy.execute("""
+                INSERT INTO {tbl}(epoch, setup, threshold_calculation, benefit_calculation, plan_generation, enrichment, update_state, delta_calculation,
+                planned_enrichments, executed_enrichments, successfull_enrichments) 
+                VALUES({epoch}, {setup}, {threshold_calculation}, {benefit_calculation}, {plan_generation}, {enrichment}, current_setting('epoch.update_state')::float,
+                {delta_calculation}, {planned_enrichments}, current_setting('epoch.executed')::int, current_setting('epoch.success')::int)
+                """.format(tbl=PERF_TBL, epoch=current_epoch, setup=setup, threshold_calculation=threshold_calculation,
+                           benefit_calculation=benefit_calculation, plan_generation=plan_generation, enrichment=enrichment,
+                           delta_calculation=delta_calculation, planned_enrichments=planned_enrichments))
+
+    plpy.execute("""INSERT INTO {storage_tbl}(epoch, benefit_table_size, benefit_rc, plan_table_size, plan_rc, imv_size, imv_rc) VALUES ({ep}, '{ben_size}', {ben_rc}, '{plan_size}', {plan_rc}, '{imv_size}', {imv_rc})
+                                    """.format(storage_tbl= STORAGE_TBL, ep=current_epoch, ben_size=benefit_table_size, ben_rc=benefit_rc, plan_size=plan_table_size, plan_rc=planned_enrichments, imv_size =imv_size, imv_rc=imv_rc))
+
+def pprint_plan():
+    ret = plpy.execute("""SELECT tbl_name, attr_name, fid, count(oid) as cnt FROM  {plan_table} GROUP BY tbl_name, attr_name, fid
+                                    """.format(plan_table=PLAN_TBL))
+
+    msgs = []
+    for val in ret:
+        msgs.append("({}, {}, {}) --> {}".format(val['tbl_name'], val['attr_name'], val['fid'], val['cnt']))
+
+    plpy.notice(
+        "\n(table, attribute, function) --> no. of enrichements planned\n\n{}\n".format(
+            '\n'.join(msgs)
+        )
+    )
+
+
+def on_conflict_stmt(tbl, i_attrs):
+
+    if not i_attrs:
+        return "ON CONFLICT ON CONSTRAINT {} DO NOTHING".format(
+            tbl + "_" + PKEY_SUFFIX)
+
+    return "ON CONFLICT ON CONSTRAINT {} DO UPDATE SET {}".format(
+        tbl+"_"+PKEY_SUFFIX,
+        ', '.join(map(lambda x: "{v}=excluded.{v}".format(v=x), i_attrs))
+    )
+
+
+def enriched_predicate_str(query, i_attrs):
+
+    try:
+        predicates = query.split('WHERE')[1].strip().split(PRED_SEP)
+    except IndexError:
+        return ''
+    predicates = list(map(lambda x: x.strip(), predicates))
+
+    for i in range(len(predicates)):
+        lhs, op, rhs = predicates[i].strip().split(' ', 2)
+        tbl, attr = lhs.split('.')
+        if attr in i_attrs:
+            predicates[i] = "madlib.run_function(p.fid, {}.id) {} {}".format(tbl, op, rhs)
+
+    return 'AND ' + PRED_SEP.join(predicates)
+
+
+def enriched_predicate_multi_str(query, i_attrs):
+    try:
+        predicates = query.split('WHERE')[1].strip().split(PRED_SEP)
+    except IndexError:
+        return ''
+    predicates = list(map(lambda x: x.strip(), predicates))
+
+    for i in range(len(predicates)):
+        lhs, op, rhs = predicates[i].strip().split(' ', 2)
+        tbl, attr = lhs.split('.')
+        if attr in i_attrs:
+            predicates[i] = "madlib.run_function_multi('{attr}', p.attr_fid, {tbl}.id, {rhs}) {op} {rhs}".format(
+                attr=attr, tbl=tbl, op=op, rhs=rhs)
+
+    return 'AND ' + PRED_SEP.join(predicates)
+
+
+def predicate_label_pair(query, i_attrs):
+    try:
+        predicates = query.split('WHERE')[1].strip().split(PRED_SEP)
+    except IndexError:
+        return {}
+
+    predicates = list(map(lambda x: x.strip(), predicates))
+
+    pred_labels = {}
+    for i in range(len(predicates)):
+        lhs, op, rhs = predicates[i].strip().split(' ', 2)
+        tbl, attr = lhs.split('.')
+        if attr in i_attrs:
+            pred_labels[attr] = rhs
+
+    return pred_labels
+
+
+def filter_to_enrich(query, i_attrs):
+    """ Returns all the imprecise attributes used in the query
+    """
+    attrs = []
+    select = query.split('FROM', 1)[0]
+
+    for sel in select.strip().split(' ', 1)[1].split(','):
+        tbl = sel.split('.', 1)[0].strip()
+        attr = sel.split()[0].split('.')[1]
+        if attr in i_attrs and attr not in attrs:
+            attrs.append(attr)
+
+    try:
+        predicates = query.split('WHERE')[1].strip().split(PRED_SEP)
+    except IndexError:
+        return attrs
+
+    predicates = list(map(lambda x: x.strip(), predicates))
+
+    for i in range(len(predicates)):
+        lhs, op, rhs = predicates[i].strip().split(' ', 2)
+        tbl, attr = lhs.split('.')
+        if attr in i_attrs and attr not in attrs:
+            attrs.append(attr)
+
+    return attrs
+
+
+def filter_to_enrich_select(query, i_attrs):
+    """ Returns all the imprecise attributes used in the SELECT part of query
+    """
+    attrs = []
+    select = query.split('FROM', 1)[0]
+
+    for sel in select.strip().split(' ', 1)[1].split(','):
+        tbl = sel.split('.', 1)[0].strip()
+        attr = sel.split()[0].split('.')[1]
+        if attr in i_attrs and attr not in attrs:
+            attrs.append(attr)
+
+    return attrs
+
+
+def filter_to_enrich_whr(query, i_attrs):
+    """ Returns all the imprecise attributes used in the WHERE clause of query
+    """
+    try:
+        predicates = query.split('WHERE')[1].strip().split(PRED_SEP)
+    except IndexError:
+        return {}
+
+    predicates = list(map(lambda x: x.strip(), predicates))
+    attrs = []
+
+    for i in range(len(predicates)):
+        lhs, op, rhs = predicates[i].strip().split(' ', 2)
+        tbl, attr = lhs.split('.')
+        if attr in i_attrs and '.' not in rhs:
+            attrs.append(attr)
+
+    return attrs
+
+
+def precise_filter_view(table, query, i_attrs):
+    """ Creates a WHERE clause containing conditions only on the precise attributes from a given query
+    """
+    try:
+        predicates = query.split('WHERE')[1].strip().split(PRED_SEP)
+    except IndexError:
+        return ''
+
+    predicates = list(map(lambda x: x.strip(), predicates))
+
+    precise = []
+    for i in range(len(predicates)):
+        lhs, op, rhs = predicates[i].strip().split(' ', 2)
+        tbl, attr = lhs.split('.')
+        if attr not in i_attrs and '.' not in rhs and tbl==table:
+            precise.append(predicates[i].strip())
+    if not precise:
+        return ""
+    return "WHERE " + PRED_SEP.join(precise)
+
+
+def predicate_str(query):
+    """ Returns only the where clause of the query
+    """
+    try:
+        predicates = query.split('WHERE')[1].strip().split(PRED_SEP)
+    except IndexError:
+        return ""
+
+    predicates = list(map(lambda x: x.strip(), predicates))
+
+    return "AND " + PRED_SEP.join(predicates)
+
+
+def imprecise_attributes(schema_madlib, tbl, **kwargs):
+    """ Returns all imprecise attributes of a table
+    """
+    ret = plpy.execute("""
+                SELECT distinct a.attr_name as attr_name FROM {attr_tbl} a
+                WHERE a.tbl_name='{tbl_name}' AND a.attr_type='imprecise'
+                """.format(attr_tbl=ATTR_TABLE, tbl_name=tbl))
+
+    return [x['attr_name'] for x in ret]
+
+
+def precise_attributes(schema_madlib, tbl, **kwargs):
+    """ Returns all precise attributes of a table
+    """
+    ret = plpy.execute("""
+                SELECT distinct a.attr_name as attr_name FROM {attr_tbl} a
+                WHERE a.tbl_name='{tbl_name}' AND a.attr_type='precise'
+                """.format(attr_tbl=ATTR_TABLE, tbl_name=tbl))
+
+    return [x['attr_name'] for x in ret]
+

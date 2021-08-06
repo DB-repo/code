@@ -1,0 +1,207 @@
+"""
+@file state.py_in
+
+@namespace progressive
+"""
+
+from algorithm import generateCombinedProbability, generateCombinedProbabilityUPI
+from constants import *
+
+import time
+import plpy
+import uuid
+import re
+import json
+import numpy as np
+
+MIN_PROB = 0.02
+
+def convert_to_upi(proba):
+    proba_json = {}
+    for i in range(len(proba)):
+        if proba[i] > MIN_PROB:
+            proba_json[i+1] = proba[i]
+
+    return proba_json
+
+def generateSyntheticResult(bitmap, tbl, attr, oid):
+    ret = plpy.execute("""SELECT bitmap_index, cost, quality
+                            FROM {ftbl} as f
+                            WHERE tbl_name = '{tbl}' AND attr_name = '{attr}' ORDER BY bitmap_index
+                        """.format(ftbl=FUNC_TBL, tbl=tbl, attr=attr))
+
+    quality = []
+    for row in ret:
+        quality.append(row['quality'])
+
+    num = den =1
+    for i in range(len(bitmap)):
+        if bitmap[i] == 1:
+            num *= quality[i]
+            den *= (1-quality[i])
+    comb_quality = num/(num+den)
+
+    num_labels = plpy.execute("""SELECT num_labels FROM {attr_tbl} WHERE tbl_name='{tbl}' AND attr_name='{attr}'
+                                    """.format(attr_tbl=ATTR_TABLE, tbl=tbl, attr=attr))[0]['num_labels']
+    correct_label = plpy.execute("""SELECT {attr} as label FROM {tbl}_full WHERE id={tid}
+                                    """.format(tbl=tbl, attr=attr, tid=oid))[0]['label']
+
+    prob = [(1-comb_quality)/(num_labels-1)]*num_labels
+    prob[correct_label] = comb_quality
+    #plpy.notice(prob)
+    return np.random.choice(num_labels, 1, p=prob)[0]
+
+
+def update_state(oid, tbl, attr, index, proba, epoch_threshold):
+    '''
+    In this function, we update the state of an object after enrichment
+    '''
+
+    # Logging Performance
+    start = time.time()
+
+    upi = plpy.execute("""SELECT upi FROM {attr_tbl} WHERE tbl_name='{tbl}' AND attr_name='{attr}'
+                                """.format(attr_tbl=ATTR_TABLE, tbl=tbl, attr=attr))[0]['upi']
+
+    if upi == 2:
+        plpy.execute("""UPDATE {state_tbl} SET state_bitmap[{index}]=1
+                        WHERE attribute='{attr}' AND id={id}
+                    """.format(state_tbl=tbl+'_'+STATE_SUFFIX, index=index, attr=attr, id=oid))
+
+
+        ret = plpy.execute("""SELECT state_bitmap FROM {state_tbl} WHERE attribute='{attr}' AND id={id}
+                            """.format(state_tbl=tbl+'_'+STATE_SUFFIX, attr=attr, id=oid))
+
+        label = generateSyntheticResult(ret[0]['state_bitmap'], tbl, attr, oid)
+        
+        if sum(ret[0]['state_bitmap']) == len(ret[0]['state_bitmap']):
+            plpy.execute("""DELETE FROM {benefit_tbl} WHERE tbl_name='{tbl_name}' AND attr_name='{attr}' AND oid={id}
+                                    """.format(benefit_tbl=BENEFIT_TBL, tbl_name=tbl, attr=attr, id=oid))
+            plpy.execute("""DELETE FROM {plan_tbl} WHERE tbl_name='{tbl_name}' AND attr_name='{attr}' AND oid={id}
+                                                """.format(plan_tbl=PLAN_TBL, tbl_name=tbl, attr=attr, id=oid))
+        plpy.execute("""UPDATE {tbl} SET {attr}={value} WHERE id={id}
+                    """.format(tbl=tbl, attr=attr, id=oid, value=label))
+    elif upi == 0:
+        proba2 = "ARRAY[{}]".format(','.join(map(str, proba)))
+        
+        plpy.execute("""UPDATE {state_tbl} SET state_bitmap[{index}]=1, output[{index}:{index}][:]={proba}
+                        WHERE attribute='{attr}' AND id={id}
+                    """.format(state_tbl=tbl+'_'+STATE_SUFFIX, index=index, attr=attr, id=oid, proba=proba2))
+
+
+        ret = plpy.execute("""SELECT state_bitmap, output FROM {state_tbl} WHERE attribute='{attr}' AND id={id}
+                            """.format(state_tbl=tbl+'_'+STATE_SUFFIX, attr=attr, id=oid))
+
+        proba = generateCombinedProbability(ret[0]['state_bitmap'], ret[0]['output'])
+
+        if sum(ret[0]['state_bitmap']) == len(ret[0]['state_bitmap']):
+            plpy.execute("""DELETE FROM {benefit_tbl} WHERE tbl_name='{tbl_name}' AND attr_name='{attr}' AND oid={id}
+                                    """.format(benefit_tbl=BENEFIT_TBL, tbl_name=tbl, attr=attr, id=oid))
+            plpy.execute("""DELETE FROM {plan_tbl} WHERE tbl_name='{tbl_name}' AND attr_name='{attr}' AND oid={id}
+                                                """.format(plan_tbl=PLAN_TBL, tbl_name=tbl, attr=attr, id=oid))
+        label = None
+        max_proba = max(proba)
+        epoch_threshold = 0 # tweets sentiment.. vary from 0.33
+        #plpy.notice(proba)
+        if max_proba > epoch_threshold:
+            label = proba.index(max_proba)
+            plpy.execute("""UPDATE {tbl} SET {attr}={value} WHERE id={id}
+                    """.format(tbl=tbl, attr=attr, id=oid, value=label))
+        else:
+            #plpy.notice(proba)
+            plpy.execute("""UPDATE {tbl} SET {attr}=NULL WHERE id={id}
+                            """.format(tbl=tbl, attr=attr, id=oid))
+
+    else:
+        proba2 = convert_to_upi(proba)
+
+        plpy.execute("""UPDATE {state_tbl} SET state_bitmap[{index}]=1, output_upi[{index}]='{proba}'::jsonb
+                                WHERE attribute='{attr}' AND id={id}
+                            """.format(state_tbl=tbl + '_' + STATE_SUFFIX, index=index, attr=attr, id=oid, proba=json.dumps(proba2)))
+
+        ret = plpy.execute("""SELECT state_bitmap, output_upi FROM {state_tbl} WHERE attribute='{attr}' AND id={id}
+                                    """.format(state_tbl=tbl + '_' + STATE_SUFFIX, attr=attr, id=oid))
+
+        #proba = generateCombinedProbabilityUPI(ret[0]['state_bitmap'], ret[0]['output_upi'], tbl, attr)
+
+        if sum(ret[0]['state_bitmap']) == len(ret[0]['state_bitmap']):
+            plpy.execute("""DELETE FROM {benefit_tbl} WHERE tbl_name='{tbl_name}' AND attr_name='{attr}' AND oid={id}
+                                            """.format(benefit_tbl=BENEFIT_TBL, tbl_name=tbl, attr=attr, id=oid))
+            plpy.execute("""DELETE FROM {plan_tbl} WHERE tbl_name='{tbl_name}' AND attr_name='{attr}' AND oid={id}
+                                                """.format(plan_tbl=PLAN_TBL, tbl_name=tbl, attr=attr, id=oid))
+        label = None
+        max_proba = max(proba)
+        #plpy.notice(max_proba)
+        epoch_threshold = 0 # for imagenet change here. 
+        if max_proba > epoch_threshold:
+            label = proba.index(max_proba)
+            label = label+1
+            #plpy.notice(label)
+            plpy.execute("""UPDATE {tbl} SET {attr}={value} WHERE id={id}
+                            """.format(tbl=tbl, attr=attr, id=oid, value=label))
+        else:
+            plpy.execute("""UPDATE {tbl} SET {attr}=NULL WHERE id={id}
+                                    """.format(tbl=tbl, attr=attr, id=oid))
+
+    # Logging Performance
+    end = time.time()
+
+    ep_state_update = plpy.execute("select current_setting('epoch.update_state')::float as ep_update_state")[0]['ep_update_state']
+    plpy.execute("set epoch.update_state = {}".format(ep_state_update+end-start))
+
+    return label
+
+
+def insert_state(oid, tbl, attr, index, proba):
+    '''
+    In this function, we update the state of an object after enrichment
+    '''
+    ret = plpy.execute("""SELECT count(*) as cnt FROM {ftbl} as f
+                                WHERE f.tbl_name='{tbl}' AND f.attr_name='{attr_name}'
+                            """.format(ftbl=FUNC_TBL, tbl=tbl, attr_name=attr))
+    num_func = ret[0]['cnt']
+
+    funcs = ['0']*num_func
+    funcs[index-1] = '1'
+    func_str = "ARRAY[{}]".format(','.join(funcs))
+
+    upi = plpy.execute("""SELECT upi FROM {attr_tbl} WHERE tbl_name='{tbl}' AND attr_name='{attr}'
+                                    """.format(attr_tbl=ATTR_TABLE, tbl=tbl, attr=attr))[0]['upi']
+
+    if upi == 2:
+
+        plpy.execute("""INSERT INTO {state_tbl}(id, attribute, state_bitmap) VALUES
+                            ({id}, '{attribute}', {bitmap})
+                        """.format(state_tbl=tbl + '_' + STATE_SUFFIX, id=oid, attribute=attr, bitmap=func_str))
+
+        ret = plpy.execute("""SELECT state_bitmap FROM {state_tbl} WHERE attribute='{attr}' AND id={id}
+                            """.format(state_tbl=tbl+'_'+STATE_SUFFIX, attr=attr, id=oid))
+
+        label = generateSyntheticResult(ret[0]['state_bitmap'], tbl, attr, oid)
+
+        plpy.execute("""UPDATE {tbl} SET {attr}={value} WHERE id={id}
+                    """.format(tbl=tbl, attr=attr, id=oid, value=label))
+    elif upi == 0:
+
+        outputs = ["ARRAY[{}]".format(','.join(['0']*len(proba)))] * num_func
+        outputs[index-1] = "ARRAY[{}]".format(','.join(map(lambda x: str(x), proba)))
+        output_str = "ARRAY[{}]".format(','.join(outputs))
+        plpy.execute("""INSERT INTO {state_tbl}(id, attribute, state_bitmap, output) VALUES
+                            ({id}, '{attribute}', {bitmap}, {output})
+                        """.format(state_tbl=tbl + '_' + STATE_SUFFIX, id=oid, attribute=attr, bitmap=func_str,
+                                   output=output_str))
+
+    else:
+        outputs = ["'{}'::jsonb"] * num_func
+        outputs[index - 1] = "'"+json.dumps(convert_to_upi(proba))+"'::jsonb"
+        output_str = "ARRAY[{}]".format(','.join(outputs))
+
+        plpy.notice(proba)
+
+        plpy.notice("""INSERT INTO {state_tbl}(id, attribute, state_bitmap, output) VALUES
+                        ({id}, '{attribute}', {bitmap}, {output})
+                    """.format(state_tbl=tbl+'_'+STATE_SUFFIX, id=oid, attribute=attr, bitmap=func_str, output=output_str))
+
+        plpy.execute("""INSERT INTO {state_tbl}(id, attribute, state_bitmap, output_upi) VALUES
+                       ({id}, '{attribute}', {bitmap}, {output})
+                    """.format(state_tbl=tbl+'_'+STATE_SUFFIX, id=oid, attribute=attr, bitmap=func_str, output=output_str))
